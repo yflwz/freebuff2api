@@ -1,11 +1,14 @@
 import uvicorn
 
+from freebuff2api.config import load_settings
+
 
 def main() -> None:
+    settings = load_settings()
     uvicorn.run(
         "freebuff2api.app:app",
-        host="0.0.0.0",
-        port=8000,
+        host=settings.host,
+        port=settings.port,
         reload=False,
     )
 

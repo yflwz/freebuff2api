@@ -24,6 +24,8 @@ class Settings:
     log_level: str = "INFO"
     log_body_chars: int = 2000
     log_color: bool = True
+    host: str = "0.0.0.0"
+    port: int = 8000
     proxy_enabled: bool = False
     proxy_url: str | None = None
     timezone: str = "Asia/Shanghai"
@@ -88,6 +90,8 @@ def load_settings() -> Settings:
         log_level=log_level,
         log_body_chars=_int("FREEBUFF_LOG_BODY_CHARS", 0 if debug else 2000),
         log_color=_bool("FREEBUFF_LOG_COLOR", color_default),
+        host=os.getenv("FREEBUFF_HOST", "0.0.0.0"),
+        port=_int("FREEBUFF_PORT", 8000),
         proxy_enabled=_bool("FREEBUFF_PROXY_ENABLED", False),
         proxy_url=os.getenv("FREEBUFF_PROXY_URL"),
         timezone=os.getenv("FREEBUFF_TIMEZONE", "Asia/Shanghai"),
