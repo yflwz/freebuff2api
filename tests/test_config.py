@@ -38,6 +38,17 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(settings.proxy_enabled)
         self.assertEqual(settings.upstream_proxy_url, "socks5://127.0.0.1:1080")
 
+    def test_codebuff_tokens_splits_comma_separated_tokens(self) -> None:
+        settings = Settings(
+            codebuff_token="token-a, token-b,,token-c ",
+            local_api_key=None,
+        )
+
+        self.assertEqual(
+            settings.codebuff_tokens,
+            ("token-a", "token-b", "token-c"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

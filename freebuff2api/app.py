@@ -10,10 +10,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .codebuff import (
+    CodebuffAccountLease,
+    CodebuffAccountPool,
     CodebuffClient,
     CodebuffError,
     FreebuffRun,
-    FreebuffSessionLease,
     SessionManager,
     utc_now_iso,
 )
@@ -35,14 +36,16 @@ logger = logging.getLogger("freebuff2api.app")
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
     configure_logging(settings)
-    client = CodebuffClient(settings)
+    accounts = CodebuffAccountPool(settings)
     app.state.settings = settings
-    app.state.codebuff = client
-    app.state.sessions = SessionManager(client, settings)
+    app.state.accounts = accounts
+    app.state.codebuff = accounts.default_client
+    app.state.sessions = accounts.default_sessions
+    logger.info("configured freebuff accounts count=%s", accounts.account_count)
     try:
         yield
     finally:
-        await client.aclose()
+        await accounts.aclose()
 
 
 app = FastAPI(title="freebuff2api", version="0.1.0", lifespan=lifespan)
@@ -58,6 +61,10 @@ def _client(request: Request) -> CodebuffClient:
 
 def _sessions(request: Request) -> SessionManager:
     return request.app.state.sessions
+
+
+def _accounts(request: Request) -> CodebuffAccountPool:
+    return request.app.state.accounts
 
 
 def _check_local_auth(request: Request) -> None:
@@ -122,15 +129,16 @@ async def chat_completions(request: Request) -> Any:
             render_debug(body, settings.log_body_chars),
         )
 
-    lease: FreebuffSessionLease | None = None
+    lease: CodebuffAccountLease | None = None
     try:
-        lease = await _sessions(request).acquire_session(
+        lease = await _accounts(request).acquire_session(
             model_config.session_id,
             messages=body.get("messages"),
         )
-        await _client(request).validate_agents()
-        await _client(request).request_ad_chain(messages=body.get("messages"))
-        run = await _start_freebuff_run_chain(_client(request), model_config)
+        client = lease.client
+        await client.validate_agents()
+        await client.request_ad_chain(messages=body.get("messages"))
+        run = await _start_freebuff_run_chain(client, model_config)
         trace_session_id = str(uuid.uuid4())
         payload = build_upstream_payload(
             body,
@@ -164,7 +172,7 @@ async def chat_completions(request: Request) -> Any:
 
     if body.get("stream") is True:
         return StreamingResponse(
-            _stream_openai_chunks(request, payload, run, session_lease=lease),
+            _stream_openai_chunks(request, payload, run, account_lease=lease),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache, no-transform",
@@ -174,7 +182,13 @@ async def chat_completions(request: Request) -> Any:
         )
 
     try:
-        response = await _collect_completion(request, payload, run, model)
+        response = await _collect_completion(
+            request,
+            payload,
+            run,
+            model,
+            client=lease.client,
+        )
         return JSONResponse(response)
     except Exception as error:
         return _error_response(error)
@@ -187,10 +201,11 @@ async def _stream_openai_chunks(
     payload: dict[str, Any],
     run: FreebuffRun,
     *,
-    session_lease: FreebuffSessionLease | None = None,
+    account_lease: CodebuffAccountLease | None = None,
+    client: CodebuffClient | None = None,
 ) -> AsyncIterator[bytes]:
     message_id: str | None = None
-    client = _client(request)
+    client = client or (account_lease.client if account_lease else _client(request))
     settings = _settings(request)
     try:
         async for line in client.chat_events(payload):
@@ -240,8 +255,8 @@ async def _stream_openai_chunks(
         yield encode_sse("[DONE]")
     finally:
         _schedule_finalize_run(client, run, message_id)
-        if session_lease is not None:
-            await session_lease.aclose()
+        if account_lease is not None:
+            await account_lease.aclose()
 
 
 async def _collect_completion(
@@ -249,11 +264,14 @@ async def _collect_completion(
     payload: dict[str, Any],
     run: FreebuffRun,
     model: str,
+    *,
+    client: CodebuffClient | None = None,
 ) -> dict[str, Any]:
     message_id: str | None = None
     accumulator = CompletionAccumulator(model)
+    client = client or _client(request)
     try:
-        async for line in _client(request).chat_events(payload):
+        async for line in client.chat_events(payload):
             data = decode_sse_data(line)
             if data is None:
                 continue
@@ -276,7 +294,7 @@ async def _collect_completion(
             )
         return response
     finally:
-        await _finalize_run(request, run, message_id)
+        await _finalize_run(request, run, message_id, client=client)
 
 
 async def _start_freebuff_run_chain(
@@ -346,8 +364,10 @@ async def _finalize_run(
     request: Request,
     run: FreebuffRun,
     message_id: str | None,
+    *,
+    client: CodebuffClient | None = None,
 ) -> None:
-    await _finalize_run_with_client(_client(request), run, message_id)
+    await _finalize_run_with_client(client or _client(request), run, message_id)
 
 
 def _schedule_finalize_run(

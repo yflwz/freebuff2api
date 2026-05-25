@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -610,6 +610,108 @@ class SessionManager:
         )
         await self.client.delete_session()
         self._sessions.clear()
+        return None
+
+
+@dataclass
+class CodebuffAccount:
+    client: CodebuffClient
+    sessions: SessionManager
+    busy: bool = False
+
+
+@dataclass
+class CodebuffAccountLease:
+    client: CodebuffClient
+    session: FreebuffSession
+    _session_lease: FreebuffSessionLease
+    _pool: CodebuffAccountPool
+    _account_index: int
+    _closed: bool = False
+
+    async def aclose(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self._session_lease.aclose()
+        await self._pool.release(self._account_index)
+
+
+class CodebuffAccountPool:
+    def __init__(self, settings: Settings) -> None:
+        tokens = settings.codebuff_tokens or (None,)
+        self._accounts: list[CodebuffAccount] = []
+        for token in tokens:
+            account_settings = replace(settings, codebuff_token=token)
+            client = CodebuffClient(account_settings)
+            self._accounts.append(
+                CodebuffAccount(
+                    client=client,
+                    sessions=SessionManager(client, account_settings),
+                )
+            )
+        self._next_index = 0
+        self._condition = asyncio.Condition()
+
+    @property
+    def account_count(self) -> int:
+        return len(self._accounts)
+
+    @property
+    def default_client(self) -> CodebuffClient:
+        return self._accounts[0].client
+
+    @property
+    def default_sessions(self) -> SessionManager:
+        return self._accounts[0].sessions
+
+    async def aclose(self) -> None:
+        await asyncio.gather(
+            *(account.client.aclose() for account in self._accounts),
+            return_exceptions=True,
+        )
+
+    async def acquire_session(
+        self,
+        model: str,
+        messages: list[dict[str, Any]] | None = None,
+    ) -> CodebuffAccountLease:
+        account_index = await self._reserve_account()
+        account = self._accounts[account_index]
+        try:
+            session_lease = await account.sessions.acquire_session(model, messages)
+        except Exception:
+            await self.release(account_index)
+            raise
+        return CodebuffAccountLease(
+            client=account.client,
+            session=session_lease.session,
+            _session_lease=session_lease,
+            _pool=self,
+            _account_index=account_index,
+        )
+
+    async def release(self, account_index: int) -> None:
+        async with self._condition:
+            self._accounts[account_index].busy = False
+            self._condition.notify(1)
+
+    async def _reserve_account(self) -> int:
+        async with self._condition:
+            while True:
+                account_index = self._next_available_index()
+                if account_index is not None:
+                    self._accounts[account_index].busy = True
+                    self._next_index = (account_index + 1) % len(self._accounts)
+                    return account_index
+                await self._condition.wait()
+
+    def _next_available_index(self) -> int | None:
+        account_count = len(self._accounts)
+        for offset in range(account_count):
+            account_index = (self._next_index + offset) % account_count
+            if not self._accounts[account_index].busy:
+                return account_index
         return None
 
 

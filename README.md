@@ -35,6 +35,13 @@ https://freebuff.071129.xyz/
 FREEBUFF_TOKEN=你的 Freebuff Bearer token
 ```
 
+多账号可用英文逗号分隔；并发请求会优先分配到空闲账号，避免单个
+Freebuff 账号的全局 active free session 被并发切模型请求互相覆盖：
+
+```dotenv
+FREEBUFF_TOKEN=token-a,token-b,token-c
+```
+
 复制 `.env.example` 为 `.env`，然后填写上游 token：
 
 ```powershell

@@ -1,7 +1,13 @@
 import asyncio
 import unittest
+from unittest.mock import patch
 
-from freebuff2api.codebuff import CodebuffError, FreebuffSession, SessionManager
+from freebuff2api.codebuff import (
+    CodebuffAccountPool,
+    CodebuffError,
+    FreebuffSession,
+    SessionManager,
+)
 from freebuff2api.config import Settings
 
 
@@ -74,6 +80,24 @@ class LeaseSwitchModelClient:
         )
 
 
+class PoolClient:
+    def __init__(self, settings) -> None:
+        self.settings = settings
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+    async def get_session(self, instance_id=None):
+        token = self.settings.codebuff_token
+        return {
+            "status": "active",
+            "instanceId": f"{token}-instance",
+            "model": "deepseek/deepseek-v4-flash",
+            "remainingMs": 3_000_000,
+        }
+
+
 class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_switch_model_deletes_active_upstream_session_before_create(self):
         client = SwitchModelClient()
@@ -130,6 +154,28 @@ class SessionManagerTests(unittest.IsolatedAsyncioTestCase):
             )
         finally:
             await second.aclose()
+
+    async def test_account_pool_uses_next_free_token_for_concurrent_requests(self):
+        settings = Settings(
+            codebuff_token="token-a,token-b",
+            local_api_key=None,
+        )
+
+        with patch("freebuff2api.codebuff.CodebuffClient", PoolClient):
+            pool = CodebuffAccountPool(settings)
+            first = await pool.acquire_session("deepseek/deepseek-v4-flash")
+            second = await pool.acquire_session("deepseek/deepseek-v4-flash")
+            try:
+                self.assertEqual(first.client.settings.codebuff_token, "token-a")
+                self.assertEqual(second.client.settings.codebuff_token, "token-b")
+                self.assertNotEqual(
+                    first.session.instance_id,
+                    second.session.instance_id,
+                )
+            finally:
+                await second.aclose()
+                await first.aclose()
+                await pool.aclose()
 
 
 if __name__ == "__main__":

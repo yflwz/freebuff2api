@@ -53,6 +53,13 @@ class Settings:
             return None
         return self.proxy_url.strip() or None
 
+    @property
+    def codebuff_tokens(self) -> tuple[str, ...]:
+        if not self.codebuff_token:
+            return ()
+        values = [item.strip() for item in self.codebuff_token.split(",")]
+        return tuple(item for item in values if item)
+
 
 def _csv(name: str, default: str) -> tuple[str, ...]:
     values = [item.strip() for item in os.getenv(name, default).split(",")]
