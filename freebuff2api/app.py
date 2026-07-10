@@ -84,9 +84,21 @@ def _check_anthropic_auth(request: Request) -> None:
     api_key = _settings(request).local_api_key
     if not api_key:
         return
-    header = request.headers.get("x-api-key") or ""
+    header = (
+        request.headers.get("x-api-key")
+        or _bearer_anthropic_key(request)
+        or ""
+    )
     if header != api_key:
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+
+def _bearer_anthropic_key(request: Request) -> str | None:
+    """Some clients (CC Switch, etc.) send Authorization: Bearer <key>."""
+    auth = request.headers.get("authorization") or ""
+    if auth.startswith("Bearer "):
+        return auth[7:]
+    return None
 
 
 def _error_response(error: Exception) -> JSONResponse:
@@ -118,6 +130,13 @@ def _anthropic_error_response(error: Exception) -> JSONResponse:
         )
     raise error
 
+
+
+
+@app.api_route("/v1", methods=["GET", "HEAD"])
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root() -> dict[str, str]:
+    return {"status": "ok"}
 
 @app.get("/healthz")
 async def healthz(request: Request) -> dict[str, Any]:

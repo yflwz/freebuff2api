@@ -11,6 +11,50 @@ from .openai_compat import (
 )
 
 
+
+def _repair_tool_call_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ensure every tool message has a preceding assistant with tool_calls."""
+    result: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    for msg in messages:
+        if msg.get("role") == "tool":
+            pending.append(msg)
+            continue
+        if pending:
+            _flush_pending(result, pending)
+        result.append(msg)
+    if pending:
+        _flush_pending(result, pending)
+    return result
+
+
+def _flush_pending(result: list[dict[str, Any]], pending: list[dict[str, Any]]) -> None:
+    """Flush pending tool messages, inserting a placeholder assistant if needed."""
+    call_ids = [m.get("tool_call_id", "") for m in pending]
+    if not _preceding_assistant_covers(result, call_ids):
+        result.append({
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {"id": cid, "type": "function", "function": {"name": "", "arguments": "{}"}}
+                for cid in call_ids
+            ],
+        })
+    result.extend(pending)
+    pending.clear()
+
+
+def _preceding_assistant_covers(result: list[dict[str, Any]], call_ids: list[str]) -> bool:
+    """Check if the last message is an assistant whose tool_calls cover all call_ids."""
+    if not result:
+        return False
+    last = result[-1]
+    if last.get("role") != "assistant":
+        return False
+    tc = last.get("tool_calls") or []
+    tc_ids = {t.get("id") for t in tc}
+    return tc_ids >= set(call_ids)
+
 def _input_item_to_messages(item: dict[str, Any]) -> list[dict[str, Any]]:
     """Convert one Responses API input item to zero or more Chat messages.
 
@@ -91,6 +135,7 @@ def _input_to_messages(
     elif isinstance(input_data, list):
         for msg in input_data:
             result.extend(_input_item_to_messages(msg))
+    result = _repair_tool_call_messages(result)
     return normalize_chat_messages(result)
 
 
