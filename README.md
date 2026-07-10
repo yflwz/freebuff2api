@@ -6,7 +6,8 @@ Codebuff Freebuff 的 OpenAI-compatible API
 
 | 端点 | 协议 | 认证方式 |
 |---|---|---|
-| `POST /v1/chat/completions` | OpenAI | `Authorization: Bearer <key>` |
+| `POST /v1/chat/completions` | OpenAI Chat | `Authorization: Bearer <key>` |
+| `POST /v1/responses` | OpenAI Responses | `Authorization: Bearer <key>` |
 | `POST /v1/messages` | Anthropic | `x-api-key: <key>` |
 | `GET /v1/models` | 通用 | — |
 | `GET /healthz` | 通用 | — |
@@ -174,6 +175,30 @@ curl -N http://127.0.0.1:8000/v1/chat/completions `
     "messages": [{"role": "user", "content": "写一个 Python 快排"}],
     "stream": true
   }'
+```
+
+### Python (OpenAI Responses API)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(api_key="你的 FREEBUFF_API_KEY", base_url="http://127.0.0.1:8000")
+
+# 非流式
+resp = client.responses.create(
+    model="deepseek/deepseek-v4-flash",
+    input="Hello",
+    instructions="You are helpful.",
+)
+print(resp.output[0].content[0].text)
+
+# 流式
+for event in client.responses.stream(
+    model="deepseek-v4-flash",
+    input="Count to 3",
+):
+    if event.type == "response.output_text.delta":
+        print(event.delta, end="")
 ```
 
 ### Python (Anthropic SDK)

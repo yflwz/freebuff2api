@@ -30,6 +30,7 @@ from .openai_compat import (
 from .models import CONTEXT_PRUNER_AGENT_ID, FreebuffModel, models_response, resolve_model
 from .sse import decode_sse_data, encode_sse
 from . import anthropic_compat
+from . import responses_compat
 
 
 logger = logging.getLogger("freebuff2api.app")
@@ -317,6 +318,95 @@ async def anthropic_messages(request: Request) -> Any:
     finally:
         await lease.aclose()
 
+
+
+@app.post("/v1/responses")
+async def responses_api(request: Request) -> Any:
+    _check_local_auth(request)
+    body = await request.json()
+    settings = _settings(request)
+    try:
+        model_config = resolve_model(body.get("model"))
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    model = model_config.id
+    logger.info("responses api request model=%s input=%s", model, type(body.get("input")).__name__)
+
+    messages = responses_compat._input_to_messages(body.get("input"), body.get("instructions"))
+    lease: CodebuffAccountLease | None = None
+    try:
+        lease = await _accounts(request).acquire_session(model_config.session_id, messages=messages)
+        client = lease.client
+        await client.request_ad_chain(messages=messages)
+        await client.validate_agents()
+        run = await _start_freebuff_run_chain(client, model_config)
+        trace_session_id = str(uu.uuid4())
+        payload = responses_compat.build_upstream_payload(
+            {**body, "messages": messages},
+            session=lease.session, run_id=run.payload_run_id,
+            client_id=settings.client_id, trace_session_id=trace_session_id,
+            upstream_model_id=model_config.upstream_id,
+        )
+    except CodebuffError as error:
+        if lease: await lease.aclose()
+        logger.warning("failed to prepare responses api: %s", error, exc_info=settings.debug)
+        return _error_response(error)
+    except Exception as error:
+        if lease: await lease.aclose()
+        logger.exception("failed to prepare responses api")
+        return _error_response(error)
+
+    if body.get("stream") is True:
+        return StreamingResponse(
+            _stream_responses_chunks(request, payload, run, model, account_lease=lease),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache, no-transform", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+
+    try:
+        openai_resp = await _collect_completion(request, payload, run, model, client=lease.client)
+        choice = openai_resp["choices"][0]
+        resp = responses_compat.build_non_streaming_response(
+            {"content": choice["message"].get("content", ""), "usage": openai_resp.get("usage")},
+            response_id="resp_" + uu.uuid4().hex, model=model,
+        )
+        return JSONResponse(resp)
+    except Exception as error:
+        return _error_response(error)
+    finally:
+        await lease.aclose()
+
+
+async def _stream_responses_chunks(
+    request: Request, payload: dict[str, Any], run: FreebuffRun, model: str, *,
+    account_lease: CodebuffAccountLease | None = None, client: CodebuffClient | None = None,
+) -> AsyncIterator[bytes]:
+    message_id: str | None = None
+    client = client or (account_lease.client if account_lease else _client(request))
+    settings = _settings(request)
+    resp_id = "resp_" + uu.uuid4().hex
+    state: dict[str, Any] = {}
+    try:
+        async for line in client.chat_events(payload):
+            data = decode_sse_data(line)
+            if data is None: continue
+            if data == "[DONE]": break
+            message_id = data.get("id") or message_id
+            chunk = sanitize_stream_chunk(data)
+            if chunk is None: continue
+            for event_type, event_data in responses_compat.responses_stream_events(
+                chunk, response_id=resp_id, model=model, state=state,
+            ):
+                yield responses_compat.encode_responses_event(event_type, event_data).encode("utf-8")
+    except CodebuffError as error:
+        logger.warning("responses stream failed run_id=%s: %s", run.run_id, error, exc_info=settings.debug)
+        yield responses_compat.encode_responses_event("error", {
+            "type": "error", "error": {"type": "api_error", "message": str(error)},
+        }).encode("utf-8")
+    finally:
+        _schedule_finalize_run(client, run, message_id)
+        if account_lease is not None:
+            await account_lease.aclose()
 
 async def _stream_openai_chunks(
     request: Request,
