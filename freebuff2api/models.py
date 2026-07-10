@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 
@@ -70,6 +70,11 @@ def resolve_model(requested: str | None) -> FreebuffModel:
         return DEFAULT_MODEL
     for model in ALL_MODELS:
         if model.id == requested:
+            return model
+    # fallback: match by suffix for clients that omit provider prefix
+    suffix = f"/{requested}"
+    for model in ALL_MODELS:
+        if model.id.endswith(suffix):
             return model
     raise ValueError(f"Unsupported Freebuff model: {requested}")
 

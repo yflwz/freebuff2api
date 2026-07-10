@@ -1,0 +1,10 @@
+﻿services:
+  freebuff2api:
+    build: .
+    image: freebuff2api:latest
+    container_name: freebuff2api
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./.env:/app/.env

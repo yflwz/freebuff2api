@@ -1,4 +1,4 @@
-"""OpenAI-compatible adapter for Codebuff Freebuff."""
+"""OpenAI- and Anthropic-compatible adapter for Codebuff Freebuff."""
 
 __all__ = ["__version__"]
 
