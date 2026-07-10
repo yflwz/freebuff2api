@@ -54,10 +54,13 @@ def build_upstream_payload(
     # Responses API tools differ from Chat Completions:
     #   Responses: {"type": "function", "name": "x", "parameters": {...}}
     #   Chat:      {"type": "function", "function": {"name": "x", "parameters": {...}}}
+    # Upstream only accepts type="function" tools; drop others (custom, file_search, etc).
     if "tools" in payload:
         converted = []
         for tool in payload["tools"]:
-            if tool.get("type") == "function" and "function" not in tool:
+            if tool.get("type") != "function":
+                continue
+            if "function" not in tool:
                 fn_fields = {k: tool[k] for k in ("name", "description", "parameters", "strict") if k in tool}
                 converted.append({"type": "function", "function": fn_fields})
             else:
