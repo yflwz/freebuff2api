@@ -51,6 +51,18 @@ def build_upstream_payload(
         key: body[key] for key in _UPSTREAM_CHAT_KEYS
         if key in body and body[key] is not None
     }
+    # Responses API tools differ from Chat Completions:
+    #   Responses: {"type": "function", "name": "x", "parameters": {...}}
+    #   Chat:      {"type": "function", "function": {"name": "x", "parameters": {...}}}
+    if "tools" in payload:
+        converted = []
+        for tool in payload["tools"]:
+            if tool.get("type") == "function" and "function" not in tool:
+                fn_fields = {k: tool[k] for k in ("name", "description", "parameters", "strict") if k in tool}
+                converted.append({"type": "function", "function": fn_fields})
+            else:
+                converted.append(tool)
+        payload["tools"] = converted
     payload["model"] = upstream_model_id or oai_model_id(body.get("model"))
     payload["messages"] = messages
     payload["stream"] = True
