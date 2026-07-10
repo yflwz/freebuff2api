@@ -124,8 +124,7 @@ python main.py
 # docker-compose.yml
 services:
   freebuff2api:
-    build: .
-    image: freebuff2api:latest
+    image: yflwz/freebuff2api:latest
     container_name: freebuff2api
     restart: always
     ports:
