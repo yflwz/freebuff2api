@@ -18,6 +18,47 @@ _STOP_REASON_MAP: dict[str, str] = {
 }
 
 
+
+_ANTHROPIC_TOOL_KEYS = frozenset({"name", "description", "input_schema", "type"})
+
+def translate_anthropic_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
+    """Convert Anthropic tool schema to OpenAI Chat Completions tool format.
+
+    Anthropic: {"name": "x", "description": "...", "input_schema": {"type": "object", ...}}
+    OpenAI:    {"type": "function", "function": {"name": "x", "description": "...", "parameters": {...}}}
+    """
+    if not tools:
+        return tools
+    converted = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("type") == "function" and "function" in tool and isinstance(tool["function"], dict):
+            converted.append(tool)
+            continue
+        tool_type = tool.get("type", "")
+        if tool_type and tool_type != "function":
+            continue
+        name = tool.get("name", "")
+        if not name:
+            continue
+        description = tool.get("description", "")
+        input_schema = tool.get("input_schema", {})
+        if not isinstance(input_schema, dict):
+            input_schema = {"type": "object", "properties": {}}
+        if not input_schema.get("type"):
+            input_schema = dict(input_schema)
+            input_schema["type"] = "object"
+        converted.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": input_schema,
+            },
+        })
+    return converted if converted else None
+
 def _anthropic_msg_role(role: str) -> str:
     return "assistant" if role == "assistant" else "user"
 
@@ -125,26 +166,61 @@ def anthropic_stream_events(
             },
         }))
 
-    content_text = ""
     for choice in openai_chunk.get("choices") or []:
         delta = choice.get("delta") or {}
-        content_text += delta.get("content") or ""
-        # reasoning_content maps to thinking content block in Anthropic
-        reasoning = delta.get("reasoning_content")
+        content_text = delta.get("content") or ""
+        reasoning_text = delta.get("reasoning_content") or ""
+        tool_calls_delta = delta.get("tool_calls") or []
 
-    if content_text:
-        if not state.get("block_started"):
-            state["block_started"] = True
-            events.append(("content_block_start", {
-                "type": "content_block_start",
-                "index": 0,
-                "content_block": {"type": "text", "text": ""},
-            }))
-        events.append(("content_block_delta", {
-            "type": "content_block_delta",
-            "index": 0,
-            "delta": {"type": "text_delta", "text": content_text},
-        }))
+        if content_text:
+            if not state.get("text_block_index"):
+                state["text_block_index"] = len(state)
+                if not state.get("text_started"):
+                    state["text_started"] = True
+                    events.append(("content_block_start", {
+                        "type": "content_block_start",
+                        "index": state["text_block_index"],
+                        "content_block": {"type": "text", "text": ""},
+                    }))
+                events.append(("content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": state["text_block_index"],
+                    "delta": {"type": "text_delta", "text": content_text},
+                }))
+
+        if reasoning_text:
+            if not state.get("thinking_started"):
+                state["thinking_started"] = True
+                state["thinking_block_index"] = len(state) + 1
+                # Anthropic doesn't have a standard SSE event for thinking,
+                # but many clients accept raw content in message_delta.
+                # We append thinking to a buffer tracked in state.
+            state.setdefault("thinking_buffer", "")
+            state["thinking_buffer"] += reasoning_text
+
+        for tc_delta in tool_calls_delta:
+            tc_index = tc_delta.get("index", 0)
+            tc_key = f"tool_block_{tc_index}"
+            if tc_key not in state:
+                state[tc_key] = True
+                events.append(("content_block_start", {
+                    "type": "content_block_start",
+                    "index": tc_index + 1,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": tc_delta.get("id", ""),
+                        "name": tc_delta.get("function", {}).get("name", ""),
+                        "input": {},
+                    },
+                }))
+            fn = tc_delta.get("function", {})
+            arg_delta = fn.get("arguments", "")
+            if arg_delta:
+                events.append(("content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": tc_index + 1,
+                    "delta": {"type": "input_json_delta", "partial_json": arg_delta},
+                }))
 
     finish_reason = None
     for choice in openai_chunk.get("choices") or []:
@@ -153,12 +229,22 @@ def anthropic_stream_events(
             break
 
     if finish_reason:
-        if state.get("block_started") and not state.get("block_stopped"):
-            state["block_stopped"] = True
+        # Close any open content blocks
+        for key in list(state.keys()):
+            if key.startswith("tool_block_") and not state.get(f"{key}_done"):
+                state[f"{key}_done"] = True
+                idx = int(key.split("_")[-1])
+                events.append(("content_block_stop", {
+                    "type": "content_block_stop",
+                    "index": idx + 1,
+                }))
+        if state.get("text_started") and not state.get("text_stopped"):
+            state["text_stopped"] = True
             events.append(("content_block_stop", {
                 "type": "content_block_stop",
-                "index": 0,
+                "index": state.get("text_block_index", 0),
             }))
+
         anthropic_reason = _STOP_REASON_MAP.get(finish_reason, finish_reason)
         usage = openai_chunk.get("usage") or {}
         output_tokens = usage.get("completion_tokens", 0)
@@ -171,7 +257,6 @@ def anthropic_stream_events(
 
     return events
 
-
 def build_non_streaming_response(
     accumulator: dict[str, Any],
     *,
@@ -183,6 +268,7 @@ def build_non_streaming_response(
     """Build an Anthropic-format non-streaming response."""
     content = accumulator.get("content", "")
     reasoning = accumulator.get("reasoning_content", "")
+    tool_calls: list[dict[str, Any]] = accumulator.get("tool_calls") or []
     finish_reason = accumulator.get("finish_reason", "stop") or "stop"
     usage = accumulator.get("usage") or {}
     output_tokens = usage.get("completion_tokens", 0)
@@ -190,7 +276,22 @@ def build_non_streaming_response(
     content_blocks: list[dict[str, Any]] = []
     if reasoning:
         content_blocks.append({"type": "thinking", "thinking": reasoning})
-    if content or not reasoning:
+    for tc in tool_calls:
+        fn = tc.get("function", {})
+        input_val = fn.get("arguments", "{}")
+        if isinstance(input_val, str):
+            import json as _json
+            try:
+                input_val = _json.loads(input_val)
+            except Exception:
+                input_val = {}
+        content_blocks.append({
+            "type": "tool_use",
+            "id": tc.get("id", ""),
+            "name": fn.get("name", ""),
+            "input": input_val,
+        })
+    if content or not (reasoning or tool_calls):
         content_blocks.append({"type": "text", "text": content})
 
     return {

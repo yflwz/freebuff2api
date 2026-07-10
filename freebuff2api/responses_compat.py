@@ -55,7 +55,7 @@ def _preceding_assistant_covers(result: list[dict[str, Any]], call_ids: list[str
     tc_ids = {t.get("id") for t in tc}
     return tc_ids >= set(call_ids)
 
-def _input_item_to_messages(item: dict[str, Any]) -> list[dict[str, Any]]:
+def _input_item_to_messages(item: dict[str, Any], seen_call_ids: set[str] | None = None) -> list[dict[str, Any]]:
     """Convert one Responses API input item to zero or more Chat messages.
 
     Handles ``message``, ``function_call`` and ``function_call_output``.
@@ -106,6 +106,10 @@ def _input_item_to_messages(item: dict[str, Any]) -> list[dict[str, Any]]:
             or item.get("id")
             or f"call_{uuid.uuid4().hex[:24]}"
         )
+        if seen_call_ids is not None:
+            if call_id in seen_call_ids:
+                return []
+            seen_call_ids.add(call_id)
         output = item.get("output", "")
         if isinstance(output, list):
             text_parts = [
@@ -133,8 +137,9 @@ def _input_to_messages(
     if isinstance(input_data, str):
         result.append({"role": "user", "content": input_data})
     elif isinstance(input_data, list):
+        seen_call_ids: set[str] = set()
         for msg in input_data:
-            result.extend(_input_item_to_messages(msg))
+            result.extend(_input_item_to_messages(msg, seen_call_ids))
     result = _repair_tool_call_messages(result)
     return normalize_chat_messages(result)
 
@@ -163,8 +168,12 @@ def build_upstream_payload(
     if "tools" in payload:
         converted = []
         for tool in payload["tools"]:
-            if tool.get("type") != "function":
+            tool_type = tool.get("type", "") # ponytail: accept custom as function, upstream only knows function
+            if tool_type not in ("function", "custom"):
                 continue
+            # Normalise type to "function" for upstream
+            tool = dict(tool)
+            tool["type"] = "function"
             if "function" not in tool:
                 fn_fields = {
                     k: tool[k]

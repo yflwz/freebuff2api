@@ -276,8 +276,12 @@ async def anthropic_messages(request: Request) -> Any:
         await client.validate_agents()
         run = await _start_freebuff_run_chain(client, model_config)
         trace_session_id = str(uuid.uuid4())
+        body_with_messages = {**body, "messages": messages}
+        tools = body_with_messages.get("tools")
+        if tools:
+            body_with_messages["tools"] = anthropic_compat.translate_anthropic_tools(tools)
         payload = build_upstream_payload(
-            {**body, "messages": messages},
+            body_with_messages,
             session=lease.session,
             run_id=run.payload_run_id,
             client_id=settings.client_id,
@@ -326,6 +330,7 @@ async def anthropic_messages(request: Request) -> Any:
         anthropic_resp = anthropic_compat.build_non_streaming_response(
             {"content": msg.get("content", ""),
              "reasoning_content": msg.get("reasoning_content", ""),
+             "tool_calls": msg.get("tool_calls") or [],
              "finish_reason": choice.get("finish_reason"),
              "usage": openai_resp.get("usage")},
             message_id="msg_" + uuid.uuid4().hex, model=model,
@@ -646,6 +651,7 @@ async def _collect_anthropic_completion(
             {
                 "content": msg.get("content", ""),
                 "reasoning_content": msg.get("reasoning_content", ""),
+                "tool_calls": msg.get("tool_calls") or [],
                 "finish_reason": choice.get("finish_reason"),
                 "usage": response.get("usage"),
             },
