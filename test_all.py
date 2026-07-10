@@ -209,6 +209,21 @@ s, r = do_post("/v1/responses", {
 })
 check("responses_dedup_history", s, r, lambda r: json.loads(r)["output"])
 
+# ===== 15. Responses with function_call_output BEFORE function_call (out-of-order reorder) =====
+s, r = do_post("/v1/responses", {
+    "model": MODEL, "stream": False,
+    "input": [
+        {"type": "function_call_output", "call_id": "rev_a", "output": "ok-1"},
+        {"type": "function_call", "call_id": "rev_a", "name": "f", "arguments": '{"x":1}'},
+    ],
+})
+def resp_reorder_check(raw):
+    obj = json.loads(raw)
+    output = obj.get("output", [])
+    types = [i["type"] for i in output]
+    assert types, f"empty output: {types}"
+check("responses_reorder", s, r, resp_reorder_check)
+
 # ===== Summary =====
 print(f"\n=== RESULTS: {passed} passed, {failed} failed ===")
 sys.exit(0 if failed == 0 else 1)

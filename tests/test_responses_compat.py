@@ -70,6 +70,43 @@ class ResponsesCompatInputTests(unittest.TestCase):
         self.assertEqual(msgs[0]["tool_call_id"], "call_42")
         self.assertEqual(msgs[0]["content"], "Sunny, 20C")
 
+    def test_output_before_call_is_reordered(self) -> None:
+        """function_call_output arriving BEFORE function_call must be emitted AFTER it."""
+        msgs = _input_to_messages([
+            {"type": "function_call_output", "call_id": "x", "output": "r1"},
+            {"type": "function_call", "call_id": "x", "name": "f", "arguments": "{}"},
+        ])
+        roles_and_ids = [
+            (m.get("role"), (m.get("tool_calls") or [{}])[0].get("id") or m.get("tool_call_id"))
+            for m in msgs
+        ]
+        roles_and_ids = [r for r in roles_and_ids if r[0] in ("assistant", "tool")]
+        self.assertEqual(roles_and_ids, [
+            ("assistant", "x"),
+            ("tool", "x"),
+        ])
+        tc_ids_seen = set()
+        for m in msgs:
+            for tc in (m.get("tool_calls") or []):
+                cid = tc.get("id")
+                if cid is not None:
+                    self.assertNotIn(cid, tc_ids_seen, f"duplicate tool_call id {cid}")
+                    tc_ids_seen.add(cid)
+
+    def test_duplicate_function_calls_deduplicated(self) -> None:
+        msgs = _input_to_messages([
+            {"type": "function_call", "call_id": "y", "name": "f", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "y", "output": "r1"},
+            {"type": "function_call", "call_id": "y", "name": "f", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "y", "output": "r2"},
+        ])
+        asst = [m for m in msgs if m.get("role") == "assistant" and (m.get("tool_calls") or [])]
+        tools = [m for m in msgs if m.get("role") == "tool"]
+        self.assertEqual(len(asst), 1)
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(asst[0]["tool_calls"][0]["id"], "y")
+        self.assertEqual(tools[0]["tool_call_id"], "y")
+
     def test_input_array_with_history_and_tool_use(self) -> None:
         history = [
             {"role": "user", "content": "weather in Tokyo?"},

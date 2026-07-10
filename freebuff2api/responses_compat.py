@@ -55,11 +55,11 @@ def _preceding_assistant_covers(result: list[dict[str, Any]], call_ids: list[str
     tc_ids = {t.get("id") for t in tc}
     return tc_ids >= set(call_ids)
 
-def _input_item_to_messages(item: dict[str, Any], seen_call_ids: set[str] | None = None) -> list[dict[str, Any]]:
+def _input_item_to_messages(item: dict[str, Any]) -> list[dict[str, Any]]:
     """Convert one Responses API input item to zero or more Chat messages.
 
     Handles ``message``, ``function_call`` and ``function_call_output``.
-    Unknown item types are ignored so we never crash on client quirks.
+    Unknown item types are ignored. Dedup is handled in ``_input_to_messages``.
     """
     if not isinstance(item, dict):
         return []
@@ -106,10 +106,6 @@ def _input_item_to_messages(item: dict[str, Any], seen_call_ids: set[str] | None
             or item.get("id")
             or f"call_{uuid.uuid4().hex[:24]}"
         )
-        if seen_call_ids is not None:
-            if call_id in seen_call_ids:
-                return []
-            seen_call_ids.add(call_id)
         output = item.get("output", "")
         if isinstance(output, list):
             text_parts = [
@@ -130,18 +126,69 @@ def _input_to_messages(
     input_data: str | list[dict[str, Any]],
     instructions: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Convert Responses API input + instructions to OpenAI-style messages."""
+    """Convert Responses API input + instructions to OpenAI-style messages.
+
+    For each ``function_call`` / ``function_call_output`` pair, the assistant
+    message is emitted BEFORE the matching tool message regardless of input
+    order. Codebuff's upstream rejects messages where two entries share the
+    same ``tool_call_id`` value, and naive reordering in
+    ``_repair_tool_call_messages`` would emit a synthetic placeholder AND the
+    actual function_call-derived assistant, both carrying the same id.
+
+    Dedup uses two separate sets so a function_call and its tool output for
+    the same call_id are NOT considered duplicates of each other.
+    """
     result: list[dict[str, Any]] = []
     if instructions:
         result.append({"role": "system", "content": instructions})
     if isinstance(input_data, str):
         result.append({"role": "user", "content": input_data})
-    elif isinstance(input_data, list):
-        seen_call_ids: set[str] = set()
-        for msg in input_data:
-            result.extend(_input_item_to_messages(msg, seen_call_ids))
-    result = _repair_tool_call_messages(result)
-    return normalize_chat_messages(result)
+        return normalize_chat_messages(_repair_tool_call_messages(result))
+
+    input_list = input_data if isinstance(input_data, list) else []
+    seen_calls: set[str] = set()
+    seen_outputs: set[str] = set()
+    deferred_tools: dict[str, dict[str, Any]] = {}
+
+    for item in input_list:
+        item_type = item.get("type", "message") if isinstance(item, dict) else "message"
+
+        if item_type == "function_call":
+            call_id = (item.get("call_id") or item.get("id") or "")
+            if not call_id:
+                call_id = f"call_{uuid.uuid4().hex[:24]}"
+            if call_id in seen_calls:
+                continue  # duplicate function_call -> skip
+            seen_calls.add(call_id)
+            for msg in _input_item_to_messages(item):
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    msg["tool_calls"][0]["id"] = call_id
+                result.append(msg)
+                if call_id in deferred_tools:
+                    result.append(deferred_tools.pop(call_id))
+
+        elif item_type == "function_call_output":
+            call_id = (item.get("call_id") or item.get("id") or "")
+            if not call_id:
+                call_id = f"call_{uuid.uuid4().hex[:24]}"
+            if call_id in seen_outputs:
+                continue
+            seen_outputs.add(call_id)
+            for msg in _input_item_to_messages(item):
+                if msg.get("role") == "tool":
+                    msg["tool_call_id"] = call_id
+                    if call_id in seen_calls:
+                        result.append(msg)
+                    else:
+                        deferred_tools[call_id] = msg
+                else:
+                    result.append(msg)
+
+        else:
+            for msg in _input_item_to_messages(item):
+                result.append(msg)
+
+    return normalize_chat_messages(_repair_tool_call_messages(result))
 
 
 def build_upstream_payload(
