@@ -340,7 +340,7 @@ async def responses_api(request: Request) -> Any:
         await client.request_ad_chain(messages=messages)
         await client.validate_agents()
         run = await _start_freebuff_run_chain(client, model_config)
-        trace_session_id = str(uu.uuid4())
+        trace_session_id = str(uuid.uuid4())
         payload = responses_compat.build_upstream_payload(
             {**body, "messages": messages},
             session=lease.session, run_id=run.payload_run_id,
@@ -368,7 +368,7 @@ async def responses_api(request: Request) -> Any:
         choice = openai_resp["choices"][0]
         resp = responses_compat.build_non_streaming_response(
             {"content": choice["message"].get("content", ""), "usage": openai_resp.get("usage")},
-            response_id="resp_" + uu.uuid4().hex, model=model,
+            response_id="resp_" + uuid.uuid4().hex, model=model,
         )
         return JSONResponse(resp)
     except Exception as error:
@@ -384,7 +384,7 @@ async def _stream_responses_chunks(
     message_id: str | None = None
     client = client or (account_lease.client if account_lease else _client(request))
     settings = _settings(request)
-    resp_id = "resp_" + uu.uuid4().hex
+    resp_id = "resp_" + uuid.uuid4().hex
     state: dict[str, Any] = {}
     try:
         async for line in client.chat_events(payload):
