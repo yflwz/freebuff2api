@@ -201,6 +201,23 @@ for event in client.responses.stream(
         print(event.delta, end="")
 ```
 
+支持的 `input` 项：
+
+- `type: "message"`（任意角色；字符串或文本块列表都会被规范化）
+- `type: "function_call"` → 转成带 `tool_calls` 的 assistant 消息
+- `type: "function_call_output"` → 转成带 `tool_call_id` 的 tool 消息
+- 其他未知类型会在请求体中静默跳过
+
+流式事件类型（与非流式响应中的 `output` 一一对应）：
+
+- `response.created` / `response.in_progress` / `response.completed`
+- `response.output_item.added` / `response.output_item.done`
+  - `message` 项：附带 `response.content_part.added` / `response.output_text.delta` / `response.output_text.done` / `response.content_part.done`
+  - `reasoning` 项：附带 `response.reasoning_text.delta` / `response.reasoning_text.done`
+  - `function_call` 项：附带 `response.function_call_arguments.delta` / `response.function_call_arguments.done`
+
+工具过滤：由于上游只接受 `type: "function"`，请求里携带的 `type: "custom"` 等非函数工具会在转发前自动剔除，避免上游返回 `tools[N]: unknown variant custom` 的 400 错误。
+
 ### Python (Anthropic SDK)
 
 ```python

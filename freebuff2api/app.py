@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
@@ -41,8 +41,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = load_settings()
     configure_logging(settings)
     accounts = CodebuffAccountPool(settings)
-    app.state.settings = settings
     app.state.accounts = accounts
+    app.state.settings = settings
     app.state.codebuff = accounts.default_client
     app.state.sessions = accounts.default_sessions
     logger.info("configured freebuff accounts count=%s", accounts.account_count)
@@ -364,17 +364,32 @@ async def responses_api(request: Request) -> Any:
         )
 
     try:
-        openai_resp = await _collect_completion(request, payload, run, model, client=lease.client)
-        choice = openai_resp["choices"][0]
+        accumulator = CompletionAccumulator(model)
+        async for line in client.chat_events(payload):
+            data = decode_sse_data(line)
+            if data is None:
+                continue
+            if data == "[DONE]":
+                break
+            accumulator.add(data)
+        await _finalize_run_with_client(client, run, None)
+        await lease.aclose()
+        response = accumulator.final_response()
+        msg = response["choices"][0]["message"]
+        choice = response["choices"][0]
         resp = responses_compat.build_non_streaming_response(
-            {"content": choice["message"].get("content", ""), "usage": openai_resp.get("usage")},
+            {
+                "content": msg.get("content", "") or "",
+                "reasoning_content": msg.get("reasoning_content", "") or "",
+                "tool_calls": msg.get("tool_calls") or [],
+                "usage": response.get("usage"),
+                "finish_reason": choice.get("finish_reason"),
+            },
             response_id="resp_" + uuid.uuid4().hex, model=model,
         )
         return JSONResponse(resp)
     except Exception as error:
         return _error_response(error)
-    finally:
-        await lease.aclose()
 
 
 async def _stream_responses_chunks(
@@ -403,6 +418,12 @@ async def _stream_responses_chunks(
         yield responses_compat.encode_responses_event("error", {
             "type": "error", "error": {"type": "api_error", "message": str(error)},
         }).encode("utf-8")
+        if not state.get("final_emitted"):
+            for event_type, event_data in responses_compat.responses_stream_events(
+                {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                response_id=resp_id, model=model, state=state,
+            ):
+                yield responses_compat.encode_responses_event(event_type, event_data).encode("utf-8")
     finally:
         _schedule_finalize_run(client, run, message_id)
         if account_lease is not None:

@@ -11,3 +11,8 @@ wheels/
 
 # Local configuration
 .env
+
+
+# Server runtime logs (written by background python main.py launches)
+server.log
+server.err.log
