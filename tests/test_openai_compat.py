@@ -28,6 +28,26 @@ class OpenAICompatTests(unittest.TestCase):
             [model.id for model in ALL_MODELS],
         )
 
+    def test_models_response_includes_display_name(self) -> None:
+        response = models_response()
+        display_names = {item.get("id"): item.get("display_name") for item in response["data"]}
+
+        expected = {
+            "deepseek/deepseek-v4-flash": "DeepSeek V4 Flash",
+            "deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
+            "moonshotai/kimi-k2.7-code": "Kimi K2.7 Code",
+            "minimax/minimax-m3": "MiniMax M3",
+            "mimo/mimo-v2.5": "MiMo 2.5",
+            "mimo/mimo-v2.5-pro": "MiMo 2.5 Pro",
+            "kwaipilot/kat-coder-pro-v2": "KAT Coder Pro V2",
+            "tencent/hy3:free": "GLM 5.2",
+            "google/gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
+            "google/gemini-3.1-flash-lite-preview": "Gemini 3.1 Flash Lite Preview",
+            "google/gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
+        }
+        for model_id, expected_name in expected.items():
+            self.assertEqual(display_names.get(model_id), expected_name)
+
     def test_resolve_model_maps_agent_id(self) -> None:
         model = resolve_model("moonshotai/kimi-k2.7-code")
 

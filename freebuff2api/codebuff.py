@@ -12,7 +12,12 @@ import httpx
 
 from .config import HAR_BROWSER_USER_AGENT, Settings
 from .logging_config import redact_headers, render_debug
-from .models import FreebuffModel, agent_validation_payload, map_model_to_agent_id
+from .models import (
+    FreebuffModel,
+    agent_validation_payload,
+    derive_display_name,
+    map_model_to_agent_id,
+)
 
 
 logger = logging.getLogger("freebuff2api.codebuff")
@@ -217,6 +222,7 @@ class CodebuffClient:
                     id=model_id,
                     agent_id=agent_id,
                     owned_by=owned_by,
+                    display_name=derive_display_name(model_id),
                 )
             )
         return models

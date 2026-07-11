@@ -11,6 +11,7 @@ class FreebuffModel:
     upstream_model_id: str | None = None
     session_model_id: str | None = None
     parent_agent_id: str | None = None
+    display_name: str | None = None
 
     @property
     def upstream_id(self) -> str:
@@ -22,14 +23,14 @@ class FreebuffModel:
 
 
 FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
-    FreebuffModel("deepseek/deepseek-v4-flash", "base2-free-deepseek-flash"),
-    FreebuffModel("deepseek/deepseek-v4-pro", "base2-free-deepseek"),
-    FreebuffModel("moonshotai/kimi-k2.7-code", "base2-free-kimi"),
-    FreebuffModel("minimax/minimax-m3", "base2-free-minimax-m3"),
-    FreebuffModel("mimo/mimo-v2.5", "base2-free-mimo"),
-    FreebuffModel("mimo/mimo-v2.5-pro", "base2-free-mimo-pro"),
-    FreebuffModel("kwaipilot/kat-coder-pro-v2", "base2-free"),
-    FreebuffModel("tencent/hy3:free", "base2-free"),
+    FreebuffModel("deepseek/deepseek-v4-flash", "base2-free-deepseek-flash", display_name="DeepSeek V4 Flash"),
+    FreebuffModel("deepseek/deepseek-v4-pro", "base2-free-deepseek", display_name="DeepSeek V4 Pro"),
+    FreebuffModel("moonshotai/kimi-k2.7-code", "base2-free-kimi", display_name="Kimi K2.7 Code"),
+    FreebuffModel("minimax/minimax-m3", "base2-free-minimax-m3", display_name="MiniMax M3"),
+    FreebuffModel("mimo/mimo-v2.5", "base2-free-mimo", display_name="MiMo 2.5"),
+    FreebuffModel("mimo/mimo-v2.5-pro", "base2-free-mimo-pro", display_name="MiMo 2.5 Pro"),
+    FreebuffModel("kwaipilot/kat-coder-pro-v2", "base2-free", display_name="KAT Coder Pro V2"),
+    FreebuffModel("tencent/hy3:free", "base2-free", display_name="GLM 5.2"),
 )
 
 DEFAULT_MODEL = FREEBUFF_MODELS[0]
@@ -46,6 +47,7 @@ GEMINI_FREE_MODELS: tuple[FreebuffModel, ...] = (
         owned_by="google",
         session_model_id=GEMINI_FLASH_LITE_SESSION_MODEL_ID,
         parent_agent_id=DEFAULT_MODEL.agent_id,
+        display_name="Gemini 2.5 Flash Lite",
     ),
     FreebuffModel(
         "google/gemini-3.1-flash-lite-preview",
@@ -53,6 +55,7 @@ GEMINI_FREE_MODELS: tuple[FreebuffModel, ...] = (
         owned_by="google",
         session_model_id=GEMINI_FLASH_LITE_SESSION_MODEL_ID,
         parent_agent_id=DEFAULT_MODEL.agent_id,
+        display_name="Gemini 3.1 Flash Lite Preview",
     ),
     FreebuffModel(
         "google/gemini-3.1-pro-preview",
@@ -60,6 +63,7 @@ GEMINI_FREE_MODELS: tuple[FreebuffModel, ...] = (
         owned_by="google",
         session_model_id=GEMINI_THINKER_PARENT_MODEL_ID,
         parent_agent_id=GEMINI_THINKER_PARENT_AGENT_ID,
+        display_name="Gemini 3.1 Pro Preview",
     ),
 )
 
@@ -74,6 +78,13 @@ _PROVIDER_AGENT_MAP: dict[str, str] = {
     "mimo/": "base2-free-mimo",
     "tencent/": "base2-free",
     "kwaipilot/": "base2-free",
+}
+
+# Explicit display-name aliases for upstream model ids that don't map cleanly
+# to a human-readable name via the generic derivation logic.
+_DISPLAY_NAME_ALIASES: dict[str, str] = {
+    "tencent/hy3:free": "GLM 5.2",
+    "tencent/hy3": "GLM 5.2",
 }
 
 
@@ -127,6 +138,15 @@ def resolve_model(requested: str | None) -> FreebuffModel:
     raise ValueError(f"Unsupported Freebuff model: {requested}")
 
 
+def derive_display_name(model_id: str) -> str:
+    """Derive a human-readable display name from an upstream model id."""
+    if model_id in _DISPLAY_NAME_ALIASES:
+        return _DISPLAY_NAME_ALIASES[model_id]
+    display = model_id.split("/")[-1]
+    display = display.replace("-", " ").replace(":", " ")
+    return display.title()
+
+
 def models_response() -> dict[str, object]:
     active = get_active_models()
     return {
@@ -137,6 +157,7 @@ def models_response() -> dict[str, object]:
                 "object": "model",
                 "created": 0,
                 "owned_by": model.owned_by,
+                "display_name": model.display_name or derive_display_name(model.id),
             }
             for model in active
         ],
