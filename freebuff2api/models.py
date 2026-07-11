@@ -64,8 +64,40 @@ GEMINI_FREE_MODELS: tuple[FreebuffModel, ...] = (
 
 ALL_MODELS = FREEBUFF_MODELS + GEMINI_FREE_MODELS
 
+# Mapping from upstream provider prefix to the agent id used by Codebuff.
+# Used when a dynamically discovered model is not in the hardcoded ALL_MODELS.
+_PROVIDER_AGENT_MAP: dict[str, str] = {
+    "deepseek/": "base2-free-deepseek",
+    "moonshotai/": "base2-free-kimi",
+    "minimax/": "base2-free",
+    "mimo/": "base2-free-mimo",
+    "tencent/": "base2-free",
+    "kwaipilot/": "base2-free",
+}
+
+
 # Runtime-discovered models from upstream Codebuff. Populated at app startup.
 _DYNAMIC_MODELS: tuple[FreebuffModel, ...] | None = None
+
+
+def map_model_to_agent_id(model_id: str) -> str:
+    """Map an upstream model id to the Codebuff agent id.
+
+    First tries exact matches against the hardcoded model list, then falls back
+    to provider-prefix heuristics, and finally returns the model id itself.
+    """
+    # Exact match from hardcoded models
+    for model in ALL_MODELS:
+        if model.id == model_id:
+            return model.agent_id
+
+    # Provider-prefix heuristic for dynamically discovered variants
+    for prefix, agent_id in _PROVIDER_AGENT_MAP.items():
+        if model_id.startswith(prefix):
+            return agent_id
+
+    # Fallback: the upstream model id is often a valid agent id in Codebuff
+    return model_id
 
 
 def set_dynamic_models(models: list[FreebuffModel]) -> None:

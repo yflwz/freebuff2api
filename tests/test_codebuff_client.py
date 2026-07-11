@@ -344,8 +344,13 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
 
         ids = {model.id for model in models}
         self.assertEqual(ids, {"moonshotai/kimi-k2.7-code", "deepseek/deepseek-v4-pro", "tencent/hy3:free"})
+        expected_agents = {
+            "moonshotai/kimi-k2.7-code": "base2-free-kimi",
+            "deepseek/deepseek-v4-pro": "base2-free-deepseek",
+            "tencent/hy3:free": "base2-free",
+        }
         for model in models:
-            self.assertEqual(model.agent_id, model.id)
+            self.assertEqual(model.agent_id, expected_agents[model.id])
 
 
 if __name__ == "__main__":

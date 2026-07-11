@@ -12,7 +12,7 @@ import httpx
 
 from .config import HAR_BROWSER_USER_AGENT, Settings
 from .logging_config import redact_headers, render_debug
-from .models import FreebuffModel, agent_validation_payload
+from .models import FreebuffModel, agent_validation_payload, map_model_to_agent_id
 
 
 logger = logging.getLogger("freebuff2api.codebuff")
@@ -211,12 +211,11 @@ class CodebuffClient:
             if isinstance(info, dict):
                 owned_by = info.get("owned_by") or info.get("ownedBy") or owned_by
             # Map upstream model id to the agent id used by Codebuff.
-            # Freebuff session creation expects the raw upstream model id as the
-            # x-freebuff-model header, so agent_id defaults to model_id.
+            agent_id = map_model_to_agent_id(model_id)
             models.append(
                 FreebuffModel(
                     id=model_id,
-                    agent_id=model_id,
+                    agent_id=agent_id,
                     owned_by=owned_by,
                 )
             )
