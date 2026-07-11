@@ -28,7 +28,7 @@ from .openai_compat import (
     sanitize_stream_chunk,
 )
 from .models import CONTEXT_PRUNER_AGENT_ID, FreebuffModel, models_response, resolve_model
-from .sse import decode_sse_data, encode_sse
+from .sse import encode_sse
 from . import anthropic_compat
 from . import responses_compat
 
@@ -113,7 +113,28 @@ def _error_response(error: Exception) -> JSONResponse:
                 }
             },
         )
-    raise error
+    if isinstance(error, HTTPException):
+        return JSONResponse(
+            status_code=error.status_code,
+            content={
+                "error": {
+                    "message": str(error.detail),
+                    "type": "invalid_request_error",
+                    "code": "http_error",
+                }
+            },
+        )
+    logger.exception("unhandled error in chat/responses endpoint")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": {
+                "message": f"Internal server error: {error}",
+                "type": "internal_server_error",
+                "code": "internal_error",
+            }
+        },
+    )
 
 
 def _anthropic_error_response(error: Exception) -> JSONResponse:
@@ -128,7 +149,28 @@ def _anthropic_error_response(error: Exception) -> JSONResponse:
                 },
             },
         )
-    raise error
+    if isinstance(error, HTTPException):
+        return JSONResponse(
+            status_code=error.status_code,
+            content={
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": str(error.detail),
+                },
+            },
+        )
+    logger.exception("unhandled error in anthropic endpoint")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "type": "error",
+            "error": {
+                "type": "api_error",
+                "message": f"Internal server error: {error}",
+            },
+        },
+    )
 
 
 
@@ -280,6 +322,9 @@ async def anthropic_messages(request: Request) -> Any:
         tools = body_with_messages.get("tools")
         if tools:
             body_with_messages["tools"] = anthropic_compat.translate_anthropic_tools(tools)
+        tool_choice = body_with_messages.get("tool_choice")
+        if tool_choice is not None:
+            body_with_messages["tool_choice"] = anthropic_compat.translate_anthropic_tool_choice(tool_choice)
         payload = build_upstream_payload(
             body_with_messages,
             session=lease.session,
@@ -334,7 +379,7 @@ async def anthropic_messages(request: Request) -> Any:
              "finish_reason": choice.get("finish_reason"),
              "usage": openai_resp.get("usage")},
             message_id="msg_" + uuid.uuid4().hex, model=model,
-            started=int(time.time()), input_tokens=0,
+            input_tokens=0,
         )
         return JSONResponse(anthropic_resp)
     except Exception as error:
@@ -389,8 +434,7 @@ async def responses_api(request: Request) -> Any:
 
     try:
         accumulator = CompletionAccumulator(model)
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
+        async for data in client.chat_events(payload):
             if data is None:
                 continue
             if data == "[DONE]":
@@ -424,25 +468,30 @@ async def _stream_responses_chunks(
     client = client or (account_lease.client if account_lease else _client(request))
     settings = _settings(request)
     resp_id = "resp_" + uuid.uuid4().hex
-    state: dict[str, Any] = {}
+    state = responses_compat.ResponsesStreamState()
     try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
-            if data is None: continue
-            if data == "[DONE]": break
-            message_id = data.get("id") or message_id
-            chunk = sanitize_stream_chunk(data)
+        async for data in client.chat_events(payload):
+            if data is None:
+                continue
+            if data == "[DONE]":
+                break
+            if isinstance(data, dict):
+                message_id = data.get("id") or message_id
+                chunk = sanitize_stream_chunk(data)
+            else:
+                chunk = None
             if chunk is None: continue
             for event_type, event_data in responses_compat.responses_stream_events(
                 chunk, response_id=resp_id, model=model, state=state,
             ):
                 yield responses_compat.encode_responses_event(event_type, event_data).encode("utf-8")
+
     except CodebuffError as error:
         logger.warning("responses stream failed run_id=%s: %s", run.run_id, error, exc_info=settings.debug)
         yield responses_compat.encode_responses_event("error", {
             "type": "error", "error": {"type": "api_error", "message": str(error)},
         }).encode("utf-8")
-        if not state.get("final_emitted"):
+        if not state.final_emitted:
             for event_type, event_data in responses_compat.responses_stream_events(
                 {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
                 response_id=resp_id, model=model, state=state,
@@ -465,8 +514,7 @@ async def _stream_openai_chunks(
     client = client or (account_lease.client if account_lease else _client(request))
     settings = _settings(request)
     try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
+        async for data in client.chat_events(payload):
             if data is None:
                 continue
             if data == "[DONE]":
@@ -479,8 +527,11 @@ async def _stream_openai_chunks(
                 yield encode_sse("[DONE]")
                 break
 
-            message_id = data.get("id") or message_id
-            chunk = sanitize_stream_chunk(data)
+            if isinstance(data, dict):
+                message_id = data.get("id") or message_id
+                chunk = sanitize_stream_chunk(data)
+            else:
+                chunk = None
             if chunk is not None:
                 if settings.debug:
                     logger.debug(
@@ -530,10 +581,9 @@ async def _stream_anthropic_chunks(
     settings = _settings(request)
     started = int(time.time())
     anthropic_msg_id = f"msg_{uuid.uuid4().hex}"
-    state: dict[str, Any] = {}
+    state = anthropic_compat.AnthropicStreamState()
     try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
+        async for data in client.chat_events(payload):
             if data is None:
                 continue
             if data == "[DONE]":
@@ -545,8 +595,11 @@ async def _stream_anthropic_chunks(
                     )
                 break
 
-            message_id = data.get("id") or message_id
-            chunk = sanitize_stream_chunk(data)
+            if isinstance(data, dict):
+                message_id = data.get("id") or message_id
+                chunk = sanitize_stream_chunk(data)
+            else:
+                chunk = None
             if chunk is None:
                 continue
             events = anthropic_compat.anthropic_stream_events(
@@ -591,8 +644,7 @@ async def _collect_completion(
     accumulator = CompletionAccumulator(model)
     client = client or _client(request)
     try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
+        async for data in client.chat_events(payload):
             if data is None:
                 continue
             if data == "[DONE]":
@@ -613,53 +665,6 @@ async def _collect_completion(
                 render_debug(response, _settings(request).log_body_chars),
             )
         return response
-    finally:
-        await _finalize_run(request, run, message_id, client=client)
-
-
-async def _collect_anthropic_completion(
-    request: Request,
-    payload: dict[str, Any],
-    run: FreebuffRun,
-    model: str,
-    *,
-    client: CodebuffClient | None = None,
-) -> dict[str, Any]:
-    message_id: str | None = None
-    client = client or _client(request)
-    accumulator = CompletionAccumulator(model)
-    started = int(time.time())
-    anthropic_msg_id = f"msg_{uuid.uuid4().hex}"
-    try:
-        async for line in client.chat_events(payload):
-            data = decode_sse_data(line)
-            if data is None:
-                continue
-            if data == "[DONE]":
-                break
-            message_id = data.get("id") or message_id
-            accumulator.add(data)
-        response = accumulator.final_response()
-        choice = response["choices"][0]
-        msg = choice["message"]
-        logger.info(
-            "anthropic completion response run_id=%s content_chars=%s",
-            run.run_id,
-            len(msg.get("content") or ""),
-        )
-        return anthropic_compat.build_non_streaming_response(
-            {
-                "content": msg.get("content", ""),
-                "reasoning_content": msg.get("reasoning_content", ""),
-                "tool_calls": msg.get("tool_calls") or [],
-                "finish_reason": choice.get("finish_reason"),
-                "usage": response.get("usage"),
-            },
-            message_id=anthropic_msg_id,
-            model=model,
-            started=started,
-            input_tokens=0,
-        )
     finally:
         await _finalize_run(request, run, message_id, client=client)
 

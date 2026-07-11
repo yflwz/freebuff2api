@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
 import time
 import uuid
 from typing import Any
@@ -11,56 +13,11 @@ from .openai_compat import (
 )
 
 
+logger = logging.getLogger("freebuff2api.responses_compat")
 
-def _repair_tool_call_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ensure every tool message has a preceding assistant with tool_calls."""
-    result: list[dict[str, Any]] = []
-    pending: list[dict[str, Any]] = []
-    for msg in messages:
-        if msg.get("role") == "tool":
-            pending.append(msg)
-            continue
-        if pending:
-            _flush_pending(result, pending)
-        result.append(msg)
-    if pending:
-        _flush_pending(result, pending)
-    return result
-
-
-def _flush_pending(result: list[dict[str, Any]], pending: list[dict[str, Any]]) -> None:
-    """Flush pending tool messages, inserting a placeholder assistant if needed."""
-    call_ids = [m.get("tool_call_id", "") for m in pending]
-    if not _preceding_assistant_covers(result, call_ids):
-        result.append({
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {"id": cid, "type": "function", "function": {"name": "", "arguments": "{}"}}
-                for cid in call_ids
-            ],
-        })
-    result.extend(pending)
-    pending.clear()
-
-
-def _preceding_assistant_covers(result: list[dict[str, Any]], call_ids: list[str]) -> bool:
-    """Check if the last message is an assistant whose tool_calls cover all call_ids."""
-    if not result:
-        return False
-    last = result[-1]
-    if last.get("role") != "assistant":
-        return False
-    tc = last.get("tool_calls") or []
-    tc_ids = {t.get("id") for t in tc}
-    return tc_ids >= set(call_ids)
 
 def _input_item_to_messages(item: dict[str, Any]) -> list[dict[str, Any]]:
-    """Convert one Responses API input item to zero or more Chat messages.
-
-    Handles ``message``, ``function_call`` and ``function_call_output``.
-    Unknown item types are ignored. Dedup is handled in ``_input_to_messages``.
-    """
+    """Convert one Responses API input item to zero or more Chat messages."""
     if not isinstance(item, dict):
         return []
     item_type = item.get("type", "message")
@@ -85,11 +42,7 @@ def _input_item_to_messages(item: dict[str, Any]) -> list[dict[str, Any]]:
         arguments = item.get("arguments", "")
         if isinstance(arguments, dict):
             arguments = json.dumps(arguments, ensure_ascii=False)
-        call_id = (
-            item.get("call_id")
-            or item.get("id")
-            or f"call_{uuid.uuid4().hex[:24]}"
-        )
+        call_id = item.get("call_id") or item.get("id") or _new_call_id()
         return [{
             "role": "assistant",
             "content": None,
@@ -101,11 +54,7 @@ def _input_item_to_messages(item: dict[str, Any]) -> list[dict[str, Any]]:
         }]
 
     if item_type == "function_call_output":
-        call_id = (
-            item.get("call_id")
-            or item.get("id")
-            or f"call_{uuid.uuid4().hex[:24]}"
-        )
+        call_id = item.get("call_id") or item.get("id") or _new_call_id()
         output = item.get("output", "")
         if isinstance(output, list):
             text_parts = [
@@ -128,67 +77,88 @@ def _input_to_messages(
 ) -> list[dict[str, Any]]:
     """Convert Responses API input + instructions to OpenAI-style messages.
 
-    For each ``function_call`` / ``function_call_output`` pair, the assistant
-    message is emitted BEFORE the matching tool message regardless of input
-    order. Codebuff's upstream rejects messages where two entries share the
-    same ``tool_call_id`` value, and naive reordering in
-    ``_repair_tool_call_messages`` would emit a synthetic placeholder AND the
-    actual function_call-derived assistant, both carrying the same id.
-
-    Dedup uses two separate sets so a function_call and its tool output for
-    the same call_id are NOT considered duplicates of each other.
+    Processes items sequentially. Dedup duplicates using tracking set.
+    Tool outputs that arrive before their matching function_call are deferred
+    until the matching call is seen, so the assistant/tool message ordering
+    required by OpenAI Chat Completions is preserved.
     """
     result: list[dict[str, Any]] = []
     if instructions:
         result.append({"role": "system", "content": instructions})
     if isinstance(input_data, str):
         result.append({"role": "user", "content": input_data})
-        return normalize_chat_messages(_repair_tool_call_messages(result))
+        return normalize_chat_messages(result)
 
     input_list = input_data if isinstance(input_data, list) else []
+    seen: set[str] = set()
     seen_calls: set[str] = set()
-    seen_outputs: set[str] = set()
     deferred_tools: dict[str, dict[str, Any]] = {}
 
     for item in input_list:
-        item_type = item.get("type", "message") if isinstance(item, dict) else "message"
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type", "message")
+        call_id = item.get("call_id") or item.get("id")
+
+        if call_id and item_type in ("function_call", "function_call_output"):
+            dedup_key = f"{item_type}_{call_id}"
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
+
+        if item_type == "function_call_output":
+            output_call_id = item.get("call_id") or item.get("id")
+            if output_call_id and output_call_id not in seen_calls:
+                deferred_tools[output_call_id] = item
+                continue
 
         if item_type == "function_call":
-            call_id = (item.get("call_id") or item.get("id") or "")
-            if not call_id:
-                call_id = f"call_{uuid.uuid4().hex[:24]}"
-            if call_id in seen_calls:
-                continue  # duplicate function_call -> skip
-            seen_calls.add(call_id)
-            for msg in _input_item_to_messages(item):
-                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                    msg["tool_calls"][0]["id"] = call_id
-                result.append(msg)
-                if call_id in deferred_tools:
-                    result.append(deferred_tools.pop(call_id))
+            call_id = item.get("call_id") or item.get("id")
+            if call_id:
+                seen_calls.add(call_id)
 
-        elif item_type == "function_call_output":
-            call_id = (item.get("call_id") or item.get("id") or "")
-            if not call_id:
-                call_id = f"call_{uuid.uuid4().hex[:24]}"
-            if call_id in seen_outputs:
-                continue
-            seen_outputs.add(call_id)
-            for msg in _input_item_to_messages(item):
-                if msg.get("role") == "tool":
-                    msg["tool_call_id"] = call_id
-                    if call_id in seen_calls:
-                        result.append(msg)
-                    else:
-                        deferred_tools[call_id] = msg
-                else:
-                    result.append(msg)
+        result.extend(_input_item_to_messages(item))
 
-        else:
-            for msg in _input_item_to_messages(item):
-                result.append(msg)
+        if item_type == "function_call":
+            call_id = item.get("call_id") or item.get("id")
+            if call_id and call_id in deferred_tools:
+                result.extend(_input_item_to_messages(deferred_tools.pop(call_id)))
 
-    return normalize_chat_messages(_repair_tool_call_messages(result))
+    # Any tool outputs whose function_call never appeared are invalid input;
+    # skip them rather than emitting a placeholder that upstream may reject.
+    if deferred_tools:
+        logger.warning(
+            "responses input contains function_call_output without matching function_call: %s",
+            list(deferred_tools.keys()),
+        )
+
+    return normalize_chat_messages(result)
+
+
+def normalize_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Responses API tools to strict Chat Completions format."""
+    converted = []
+    for tool in tools:
+        tool_type = tool.get("type", "")
+        if tool_type not in ("function", "custom"):
+            continue
+
+        fn = tool.get("function") or tool
+        parameters = fn.get("parameters")
+
+        if not isinstance(parameters, dict) or "type" not in parameters:
+            parameters = {"type": "object", "properties": {}}
+
+        fn_fields = {
+            "name": fn.get("name", ""),
+            "parameters": parameters,
+        }
+        for k in ("description", "strict"):
+            if k in fn:
+                fn_fields[k] = fn[k]
+
+        converted.append({"type": "function", "function": fn_fields})
+    return converted
 
 
 def build_upstream_payload(
@@ -200,7 +170,6 @@ def build_upstream_payload(
     trace_session_id: str | None = None,
     upstream_model_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build Codebuff upstream payload from a Responses API request."""
     from .openai_compat import _UPSTREAM_CHAT_KEYS, model_id as oai_model_id
 
     messages = _input_to_messages(body.get("input"), body.get("instructions"))
@@ -208,35 +177,10 @@ def build_upstream_payload(
         key: body[key] for key in _UPSTREAM_CHAT_KEYS
         if key in body and body[key] is not None
     }
-    # Responses API tools differ from Chat Completions:
-    #   Responses: {"type": "function", "name": "x", "parameters": {...}}
-    #   Chat:      {"type": "function", "function": {"name": "x", "parameters": {...}}}
-    # Upstream only accepts type="function" tools; drop others (custom, file_search, etc).
+
     if "tools" in payload:
-        converted = []
-        for tool in payload["tools"]:
-            tool_type = tool.get("type", "") # ponytail: accept custom as function, upstream only knows function
-            if tool_type not in ("function", "custom"):
-                continue
-            # Normalise type to "function" for upstream
-            tool = dict(tool)
-            tool["type"] = "function"
-            if "function" not in tool:
-                fn_fields = {
-                    k: tool[k]
-                    for k in ("name", "description", "parameters", "strict")
-                    if k in tool
-                }
-                if not isinstance(fn_fields.get("parameters"), dict) or "type" not in fn_fields["parameters"]:
-                    fn_fields["parameters"] = {"type": "object", "properties": {}}
-                converted.append({"type": "function", "function": fn_fields})
-            else:
-                fn = dict(tool["function"])
-                if not isinstance(fn.get("parameters"), dict) or "type" not in fn["parameters"]:
-                    fn["parameters"] = {"type": "object", "properties": {}}
-                    tool["function"] = fn
-                converted.append(tool)
-        payload["tools"] = converted
+        payload["tools"] = normalize_tools(payload["tools"])
+
     payload["model"] = upstream_model_id or oai_model_id(body.get("model"))
     payload["messages"] = messages
     payload["stream"] = True
@@ -263,45 +207,83 @@ def _new_call_id() -> str:
     return f"call_{uuid.uuid4().hex[:24]}"
 
 
-def _ensure_text_item(state: dict[str, Any]) -> dict[str, Any]:
-    if "text_item" not in state:
-        state["text_item"] = {
-            "id": f"msg_{uuid.uuid4().hex}",
-            "output_index": state["next_output_index"],
-            "added": False,
-            "full_text": "",
-        }
-        state["next_output_index"] += 1
-    return state["text_item"]
+@dataclasses.dataclass
+class StreamItemState:
+    id: str
+    output_index: int
+    added: bool = False
+    full_text: str = ""
+    name: str = ""
+    arguments: str = ""
 
 
-def _ensure_reasoning_item(state: dict[str, Any]) -> dict[str, Any]:
-    if "reasoning_item" not in state:
-        state["reasoning_item"] = {
-            "id": f"rs_{uuid.uuid4().hex}",
-            "output_index": state["next_output_index"],
-            "added": False,
-            "full_text": "",
-        }
-        state["next_output_index"] += 1
-    return state["reasoning_item"]
+@dataclasses.dataclass
+class ResponsesStreamState:
+    created: bool = False
+    final_emitted: bool = False
+    next_output_index: int = 0
+    text_item: StreamItemState | None = None
+    reasoning_item: StreamItemState | None = None
+    tool_items: dict[int, StreamItemState] = dataclasses.field(default_factory=dict)
 
+    def ensure_text_item(self) -> StreamItemState:
+        if not self.text_item:
+            self.text_item = StreamItemState(
+                id=f"msg_{uuid.uuid4().hex}", output_index=self.next_output_index
+            )
+            self.next_output_index += 1
+        return self.text_item
 
-def _ensure_call_item(
-    state: dict[str, Any], index: int,
-) -> dict[str, Any]:
-    state.setdefault("tool_items", {})
-    items = state["tool_items"]
-    if index not in items:
-        items[index] = {
-            "id": f"fc_{uuid.uuid4().hex}",
-            "output_index": state["next_output_index"],
-            "added": False,
-            "name": "",
-            "arguments": "",
-        }
-        state["next_output_index"] += 1
-    return items[index]
+    def ensure_reasoning_item(self) -> StreamItemState:
+        if not self.reasoning_item:
+            self.reasoning_item = StreamItemState(
+                id=f"rs_{uuid.uuid4().hex}", output_index=self.next_output_index
+            )
+            self.next_output_index += 1
+        return self.reasoning_item
+
+    def ensure_call_item(self, index: int) -> StreamItemState:
+        if index not in self.tool_items:
+            self.tool_items[index] = StreamItemState(
+                id=f"fc_{uuid.uuid4().hex}", output_index=self.next_output_index
+            )
+            self.next_output_index += 1
+        return self.tool_items[index]
+
+    def snapshot_output(self) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        if self.reasoning_item and self.reasoning_item.added:
+            output.append({
+                "type": "reasoning",
+                "id": self.reasoning_item.id,
+                "summary": [{"type": "summary_text", "text": self.reasoning_item.full_text}],
+            })
+        for index in sorted(self.tool_items):
+            item = self.tool_items[index]
+            if not item.added:
+                continue
+            output.append({
+                "type": "function_call",
+                "id": item.id,
+                "call_id": item.id,
+                "name": item.name,
+                "arguments": item.arguments,
+            })
+        if self.text_item and (self.text_item.added or self.text_item.full_text):
+            output.append({
+                "type": "message",
+                "id": self.text_item.id,
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": self.text_item.full_text, "annotations": []}],
+            })
+        if not output:
+            output.append({
+                "type": "message",
+                "id": f"msg_{uuid.uuid4().hex}",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "", "annotations": []}],
+            })
+        return output
 
 
 def responses_stream_events(
@@ -309,28 +291,12 @@ def responses_stream_events(
     *,
     response_id: str,
     model: str,
-    state: dict[str, Any],
+    state: ResponsesStreamState,
 ) -> list[tuple[str, dict[str, Any]]]:
-    """Convert one OpenAI chunk into Responses API SSE events.
-
-    Mirrors OpenAI's Responses API event ordering so conformant clients
-    (Open Design, SDKs) can parse incrementally:
-
-    - ``response.created`` (once)
-    - For each output item: ``response.output_item.added``,
-      per-block deltas (``response.output_text.delta`` /
-      ``response.reasoning_text.delta`` /
-      ``response.function_call_arguments.delta``) then
-      ``*.done``, then ``response.output_item.done``.
-    - ``response.completed`` (once, on finish_reason).
-    """
     events: list[tuple[str, dict[str, Any]]] = []
 
-    state.setdefault("next_output_index", 0)
-    state.setdefault("final_emitted", False)
-
-    if not state.get("created"):
-        state["created"] = True
+    if not state.created:
+        state.created = True
         events.append(("response.created", {
             "type": "response.created",
             "response": {
@@ -359,15 +325,15 @@ def responses_stream_events(
 
         content_piece = delta.get("content")
         if content_piece:
-            item = _ensure_text_item(state)
-            item["full_text"] += content_piece
-            if not item["added"]:
-                item["added"] = True
+            item = state.ensure_text_item()
+            item.full_text += content_piece
+            if not item.added:
+                item.added = True
                 events.append(("response.output_item.added", {
                     "type": "response.output_item.added",
-                    "output_index": item["output_index"],
+                    "output_index": item.output_index,
                     "item": {
-                        "id": item["id"],
+                        "id": item.id,
                         "type": "message",
                         "role": "assistant",
                         "status": "in_progress",
@@ -376,152 +342,144 @@ def responses_stream_events(
                 }))
                 events.append(("response.content_part.added", {
                     "type": "response.content_part.added",
-                    "item_id": item["id"],
-                    "output_index": item["output_index"],
+                    "item_id": item.id,
+                    "output_index": item.output_index,
                     "content_index": 0,
                     "part": {"type": "output_text", "text": "", "annotations": []},
                 }))
             events.append(("response.output_text.delta", {
                 "type": "response.output_text.delta",
-                "item_id": item["id"],
-                "output_index": item["output_index"],
+                "item_id": item.id,
+                "output_index": item.output_index,
                 "content_index": 0,
                 "delta": content_piece,
             }))
 
         reasoning_piece = delta.get("reasoning_content")
         if reasoning_piece:
-            item = _ensure_reasoning_item(state)
-            item["full_text"] += reasoning_piece
-            if not item["added"]:
-                item["added"] = True
+            item = state.ensure_reasoning_item()
+            item.full_text += reasoning_piece
+            if not item.added:
+                item.added = True
                 events.append(("response.output_item.added", {
                     "type": "response.output_item.added",
-                    "output_index": item["output_index"],
+                    "output_index": item.output_index,
                     "item": {
-                        "id": item["id"],
+                        "id": item.id,
                         "type": "reasoning",
                         "summary": [],
                     },
                 }))
             events.append(("response.reasoning_text.delta", {
                 "type": "response.reasoning_text.delta",
-                "item_id": item["id"],
-                "output_index": item["output_index"],
+                "item_id": item.id,
+                "output_index": item.output_index,
                 "content_index": 0,
                 "delta": reasoning_piece,
             }))
 
         for tool_call in delta.get("tool_calls") or []:
             tc_index = int(tool_call.get("index", 0))
-            item = _ensure_call_item(state, tc_index)
+            item = state.ensure_call_item(tc_index)
             if tool_call.get("id"):
-                item["id"] = tool_call["id"]
+                item.id = tool_call["id"]
             function = tool_call.get("function") or {}
             if function.get("name"):
-                item["name"] += function["name"]
+                item.name += function["name"]
             arguments_chunk = function.get("arguments")
             if arguments_chunk:
-                item["arguments"] += arguments_chunk
-            if not item["added"]:
-                item["added"] = True
+                item.arguments += arguments_chunk
+            if not item.added:
+                item.added = True
                 events.append(("response.output_item.added", {
                     "type": "response.output_item.added",
-                    "output_index": item["output_index"],
+                    "output_index": item.output_index,
                     "item": {
-                        "id": item["id"],
+                        "id": item.id,
                         "type": "function_call",
                         "status": "in_progress",
-                        "call_id": item["id"],
-                        "name": item["name"],
-                        "arguments": item["arguments"],
+                        "call_id": item.id,
+                        "name": item.name,
+                        "arguments": item.arguments,
                     },
                 }))
             if arguments_chunk:
                 events.append(("response.function_call_arguments.delta", {
                     "type": "response.function_call_arguments.delta",
-                    "item_id": item["id"],
-                    "output_index": item["output_index"],
+                    "item_id": item.id,
+                    "output_index": item.output_index,
                     "delta": arguments_chunk,
                 }))
 
     usage = openai_chunk.get("usage") or usage
 
-    if finish_reason and not state.get("final_emitted"):
-        state["final_emitted"] = True
+    if finish_reason and not state.final_emitted:
+        state.final_emitted = True
         completed_output: list[dict[str, Any]] = []
 
-        reasoning = state.get("reasoning_item")
-        if reasoning and reasoning["added"]:
-            full_reasoning = reasoning["full_text"]
+        reasoning = state.reasoning_item
+        if reasoning and reasoning.added:
             events.append(("response.reasoning_text.done", {
                 "type": "response.reasoning_text.done",
-                "item_id": reasoning["id"],
-                "output_index": reasoning["output_index"],
+                "item_id": reasoning.id,
+                "output_index": reasoning.output_index,
                 "content_index": 0,
-                "text": full_reasoning,
+                "text": reasoning.full_text,
             }))
             events.append(("response.output_item.done", {
                 "type": "response.output_item.done",
-                "output_index": reasoning["output_index"],
+                "output_index": reasoning.output_index,
                 "item": {
-                    "id": reasoning["id"],
+                    "id": reasoning.id,
                     "type": "reasoning",
-                    "summary": [{
-                        "type": "summary_text",
-                        "text": full_reasoning,
-                    }],
+                    "summary": [{"type": "summary_text", "text": reasoning.full_text}],
                 },
             }))
             completed_output.append({
                 "type": "reasoning",
-                "id": reasoning["id"],
-                "summary": [{
-                    "type": "summary_text",
-                    "text": full_reasoning,
-                }],
+                "id": reasoning.id,
+                "summary": [{"type": "summary_text", "text": reasoning.full_text}],
             })
 
-        for tc_index in sorted(state.get("tool_items") or {}):
-            item = state["tool_items"][tc_index]
-            if not item["added"]:
+        for tc_index in sorted(state.tool_items):
+            item = state.tool_items[tc_index]
+            if not item.added:
                 continue
             events.append(("response.function_call_arguments.done", {
                 "type": "response.function_call_arguments.done",
-                "item_id": item["id"],
-                "output_index": item["output_index"],
-                "arguments": item["arguments"],
+                "item_id": item.id,
+                "output_index": item.output_index,
+                "arguments": item.arguments,
             }))
             events.append(("response.output_item.done", {
                 "type": "response.output_item.done",
-                "output_index": item["output_index"],
+                "output_index": item.output_index,
                 "item": {
-                    "id": item["id"],
+                    "id": item.id,
                     "type": "function_call",
                     "status": "completed",
-                    "call_id": item["id"],
-                    "name": item["name"],
-                    "arguments": item["arguments"],
+                    "call_id": item.id,
+                    "name": item.name,
+                    "arguments": item.arguments,
                 },
             }))
             completed_output.append({
                 "type": "function_call",
-                "id": item["id"],
-                "call_id": item["id"],
-                "name": item["name"],
-                "arguments": item["arguments"],
+                "id": item.id,
+                "call_id": item.id,
+                "name": item.name,
+                "arguments": item.arguments,
             })
 
-        text_item = state.get("text_item")
-        if text_item and (text_item["added"] or text_item["full_text"]):
-            full_text = text_item["full_text"]
-            if not text_item["added"]:
-                text_item["added"] = True
+        text_item = state.text_item
+        if text_item and (text_item.added or text_item.full_text):
+            if not text_item.added:
+                text_item.added = True
                 events.append(("response.output_item.added", {
                     "type": "response.output_item.added",
-                    "output_index": text_item["output_index"],
+                    "output_index": text_item.output_index,
                     "item": {
-                        "id": text_item["id"],
+                        "id": text_item.id,
                         "type": "message",
                         "role": "assistant",
                         "status": "in_progress",
@@ -530,49 +488,41 @@ def responses_stream_events(
                 }))
                 events.append(("response.content_part.added", {
                     "type": "response.content_part.added",
-                    "item_id": text_item["id"],
-                    "output_index": text_item["output_index"],
+                    "item_id": text_item.id,
+                    "output_index": text_item.output_index,
                     "content_index": 0,
                     "part": {"type": "output_text", "text": "", "annotations": []},
                 }))
             events.append(("response.output_text.done", {
                 "type": "response.output_text.done",
-                "item_id": text_item["id"],
-                "output_index": text_item["output_index"],
+                "item_id": text_item.id,
+                "output_index": text_item.output_index,
                 "content_index": 0,
-                "text": full_text,
+                "text": text_item.full_text,
             }))
             events.append(("response.content_part.done", {
                 "type": "response.content_part.done",
-                "item_id": text_item["id"],
-                "output_index": text_item["output_index"],
+                "item_id": text_item.id,
+                "output_index": text_item.output_index,
                 "content_index": 0,
-                "part": {"type": "output_text", "text": full_text, "annotations": []},
+                "part": {"type": "output_text", "text": text_item.full_text, "annotations": []},
             }))
             events.append(("response.output_item.done", {
                 "type": "response.output_item.done",
-                "output_index": text_item["output_index"],
+                "output_index": text_item.output_index,
                 "item": {
-                    "id": text_item["id"],
+                    "id": text_item.id,
                     "type": "message",
                     "role": "assistant",
                     "status": "completed",
-                    "content": [{
-                        "type": "output_text",
-                        "text": full_text,
-                        "annotations": [],
-                    }],
+                    "content": [{"type": "output_text", "text": text_item.full_text, "annotations": []}],
                 },
             }))
             completed_output.append({
                 "type": "message",
-                "id": text_item["id"],
+                "id": text_item.id,
                 "role": "assistant",
-                "content": [{
-                    "type": "output_text",
-                    "text": full_text,
-                    "annotations": [],
-                }],
+                "content": [{"type": "output_text", "text": text_item.full_text, "annotations": []}],
             })
 
         if not completed_output:
@@ -629,7 +579,7 @@ def responses_stream_events(
                 "created_at": int(time.time()),
                 "model": model,
                 "status": "completed",
-                "output": state.get("_final_output") or _snapshot_output(state),
+                "output": completed_output or state.snapshot_output(),
                 "usage": {
                     "input_tokens": (usage or {}).get("prompt_tokens", 0),
                     "output_tokens": (usage or {}).get("completion_tokens", 0),
@@ -641,60 +591,12 @@ def responses_stream_events(
     return events
 
 
-def _snapshot_output(state: dict[str, Any]) -> list[dict[str, Any]]:
-    """Re-derive completed output items from accumulated state.
-
-    Used as a safety net so clients always see the full output in
-    ``response.completed`` regardless of add/done event ordering issues.
-    """
-    output: list[dict[str, Any]] = []
-    if state.get("reasoning_item", {}).get("added"):
-        rs = state["reasoning_item"]
-        output.append({
-            "type": "reasoning",
-            "id": rs["id"],
-            "summary": [{"type": "summary_text", "text": rs["full_text"]}],
-        })
-    for index in sorted(state.get("tool_items") or {}):
-        item = state["tool_items"][index]
-        if not item["added"]:
-            continue
-        output.append({
-            "type": "function_call",
-            "id": item["id"],
-            "call_id": item["id"],
-            "name": item["name"],
-            "arguments": item["arguments"],
-        })
-    text = state.get("text_item")
-    if text and (text["added"] or text["full_text"]):
-        output.append({
-            "type": "message",
-            "id": text["id"],
-            "role": "assistant",
-            "content": [{
-                "type": "output_text",
-                "text": text["full_text"],
-                "annotations": [],
-            }],
-        })
-    if not output:
-        output.append({
-            "type": "message",
-            "id": f"msg_{uuid.uuid4().hex}",
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": "", "annotations": []}],
-        })
-    return output
-
-
 def build_non_streaming_response(
     accumulator: dict[str, Any],
     *,
     response_id: str,
     model: str,
 ) -> dict[str, Any]:
-    """Build Responses API format from accumulated OpenAI response."""
     usage = accumulator.get("usage") or {}
     return {
         "id": response_id,
@@ -723,7 +625,7 @@ def _build_output_items(accumulator: dict[str, Any]) -> list[dict[str, Any]]:
         })
     tool_calls = accumulator.get("tool_calls") or []
     for tool_call in tool_calls:
-        call_id = tool_call.get("id") or f"call_{uuid.uuid4().hex[:24]}"
+        call_id = tool_call.get("id") or _new_call_id()
         function = tool_call.get("function") or {}
         output.append({
             "type": "function_call",
@@ -749,10 +651,7 @@ def collect_response_payload(
     model: str,
     request_body: dict[str, Any],
 ) -> dict[str, Any]:
-    """Convenience helper that builds a Responses API payload
-    directly from a CompletionAccumulator's final state.
-    """
-    acc = CompletionAccumulator(model)
+    """Convenience helper that builds a Responses API payload directly."""
     return build_non_streaming_response(
         {
             "content": "",

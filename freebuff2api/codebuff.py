@@ -456,7 +456,7 @@ class CodebuffClient:
         )
         logger.info("agent run finished run_id=%s total_steps=%s", run_id, total_steps)
 
-    async def chat_events(self, payload: dict[str, Any]) -> AsyncIterator[str]:
+    async def chat_events(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any] | str]:
         url = f"{self.settings.codebuff_api_url}/api/v1/chat/completions"
         request_headers = self._headers(
             json_body=True,
@@ -488,15 +488,28 @@ class CodebuffClient:
                         body=text,
                         prefix="Codebuff chat failed",
                     )
-                async for line in response.aiter_lines():
+                async for frame in self._iter_sse_frames(response):
+                    data = self._parse_sse_frame(frame)
+                    if data is None:
+                        continue
                     if self.settings.debug:
                         logger.debug(
-                            "chat stream line=%s",
-                            render_debug(line, self.settings.log_body_chars),
+                            "chat stream data=%s",
+                            render_debug(data, self.settings.log_body_chars),
                         )
-                    yield line
+                    yield data
         except httpx.RequestError as error:
             raise _network_error("POST", url, error) from error
+
+    @staticmethod
+    def _iter_sse_frames(response: httpx.Response):
+        from .sse import iter_sse_frames
+        return iter_sse_frames(response)
+
+    @staticmethod
+    def _parse_sse_frame(frame: bytes):
+        from .sse import parse_sse_frame
+        return parse_sse_frame(frame)
 
 
 class SessionManager:

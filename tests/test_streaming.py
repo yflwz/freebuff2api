@@ -16,13 +16,20 @@ class FakeClient:
         self.calls = []
 
     async def chat_events(self, payload):
-        yield (
-            'data: {"id":"chunk-1","object":"chat.completion.chunk",'
-            '"created":1,"model":"deepseek/deepseek-v4-flash",'
-            '"choices":[{"index":0,"delta":{"content":null,'
-            '"reasoning_content":"hello"},"finish_reason":null}]}'
-        )
-        yield "data: [DONE]"
+        yield {
+            "id": "chunk-1",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": None, "reasoning_content": "hello"},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield "[DONE]"
 
     async def record_run_step(self, *args, **kwargs) -> None:
         self.recorded = True

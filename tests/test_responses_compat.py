@@ -7,6 +7,7 @@ import json
 import unittest
 
 from freebuff2api.responses_compat import (
+    ResponsesStreamState,
     _input_item_to_messages,
     _input_to_messages,
     build_non_streaming_response,
@@ -20,7 +21,7 @@ def _collapse(item):
 
 
 def _feed(chunks):
-    state: dict = {}
+    state = ResponsesStreamState()
     events = []
     response_id = "resp_ut"
     for chunk in chunks:
