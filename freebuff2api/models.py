@@ -24,18 +24,19 @@ class FreebuffModel:
 FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
     FreebuffModel("deepseek/deepseek-v4-flash", "base2-free-deepseek-flash"),
     FreebuffModel("deepseek/deepseek-v4-pro", "base2-free-deepseek"),
-    FreebuffModel("moonshotai/kimi-k2.6", "base2-free-kimi"),
-    FreebuffModel("minimax/minimax-m2.7", "base2-free"),
+    FreebuffModel("moonshotai/kimi-k2.7-code", "base2-free-kimi"),
     FreebuffModel("minimax/minimax-m3", "base2-free-minimax-m3"),
     FreebuffModel("mimo/mimo-v2.5", "base2-free-mimo"),
     FreebuffModel("mimo/mimo-v2.5-pro", "base2-free-mimo-pro"),
+    FreebuffModel("kwaipilot/kat-coder-pro-v2", "base2-free"),
+    FreebuffModel("tencent/hy3:free", "base2-free"),
 )
 
 DEFAULT_MODEL = FREEBUFF_MODELS[0]
 CONTEXT_PRUNER_AGENT_ID = "context-pruner"
 GEMINI_THINKER_AGENT_ID = "thinker-with-files-gemini"
 GEMINI_THINKER_PARENT_AGENT_ID = "base2-free-kimi"
-GEMINI_THINKER_PARENT_MODEL_ID = "moonshotai/kimi-k2.6"
+GEMINI_THINKER_PARENT_MODEL_ID = "moonshotai/kimi-k2.7-code"
 GEMINI_FLASH_LITE_SESSION_MODEL_ID = DEFAULT_MODEL.id
 
 GEMINI_FREE_MODELS: tuple[FreebuffModel, ...] = (
