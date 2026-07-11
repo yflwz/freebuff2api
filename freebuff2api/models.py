@@ -85,6 +85,7 @@ _PROVIDER_AGENT_MAP: dict[str, str] = {
 _DISPLAY_NAME_ALIASES: dict[str, str] = {
     "tencent/hy3:free": "GLM 5.2",
     "tencent/hy3": "GLM 5.2",
+    "tencent/hy3.free": "GLM 5.2",
 }
 
 
