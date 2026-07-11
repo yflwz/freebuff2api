@@ -36,25 +36,33 @@ FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
 DEFAULT_MODEL = FREEBUFF_MODELS[0]
 CONTEXT_PRUNER_AGENT_ID = "context-pruner"
 GEMINI_THINKER_AGENT_ID = "thinker-with-files-gemini"
-GEMINI_THINKER_PARENT_AGENT_ID = "base2-free-kimi"
-GEMINI_THINKER_PARENT_MODEL_ID = "moonshotai/kimi-k2.7-code"
-GEMINI_FLASH_LITE_SESSION_MODEL_ID = DEFAULT_MODEL.id
+# All "free" Gemini variants route their quota pool + parent lineage onto
+# mimo/mimo-v2.5 (unlimited upstream) instead of kimi's 5/day pool. Chat
+# dispatch (agent_id) is unchanged so users still get the Gemini-flavored
+# responses; only the rate-limit counter and parent agent move to mimo.
+GEMINI_SESSION_MODEL_ID = "mimo/mimo-v2.5"
+GEMINI_PARENT_AGENT_ID = "base2-free-mimo"
+# Backwards-compatible aliases for downstream test imports / external
+# callers that still reference the older constants by name.
+GEMINI_THINKER_PARENT_AGENT_ID = GEMINI_PARENT_AGENT_ID
+GEMINI_THINKER_PARENT_MODEL_ID = GEMINI_SESSION_MODEL_ID
+GEMINI_FLASH_LITE_SESSION_MODEL_ID = GEMINI_SESSION_MODEL_ID
 
 GEMINI_FREE_MODELS: tuple[FreebuffModel, ...] = (
     FreebuffModel(
         "google/gemini-2.5-flash-lite",
         "file-picker",
         owned_by="google",
-        session_model_id=GEMINI_FLASH_LITE_SESSION_MODEL_ID,
-        parent_agent_id=DEFAULT_MODEL.agent_id,
+        session_model_id=GEMINI_SESSION_MODEL_ID,
+        parent_agent_id=GEMINI_PARENT_AGENT_ID,
         display_name="Gemini 2.5 Flash Lite",
     ),
     FreebuffModel(
         "google/gemini-3.1-flash-lite-preview",
         "file-picker-max",
         owned_by="google",
-        session_model_id=GEMINI_FLASH_LITE_SESSION_MODEL_ID,
-        parent_agent_id=DEFAULT_MODEL.agent_id,
+        session_model_id=GEMINI_SESSION_MODEL_ID,
+        parent_agent_id=GEMINI_PARENT_AGENT_ID,
         display_name="Gemini 3.1 Flash Lite Preview",
     ),
     FreebuffModel(

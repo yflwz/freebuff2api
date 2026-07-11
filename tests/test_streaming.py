@@ -133,7 +133,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.run_id, "run-1")
         self.assertEqual(run.chat_run_id, "run-2")
         self.assertEqual(run.payload_run_id, "run-2")
-        self.assertEqual(client.calls[0], ("start", "base2-free-kimi", [], "run-1"))
+        self.assertEqual(client.calls[0], ("start", "base2-free-mimo", [], "run-1"))
         self.assertEqual(
             client.calls[1],
             ("start", "thinker-with-files-gemini", ["run-1"], "run-2"),
@@ -152,7 +152,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(run.payload_run_id, "run-2")
         self.assertEqual(
             client.calls[0],
-            ("start", "base2-free-deepseek-flash", [], "run-1"),
+            ("start", "base2-free-mimo", [], "run-1"),
         )
         self.assertEqual(
             client.calls[1],

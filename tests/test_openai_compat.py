@@ -69,22 +69,22 @@ class OpenAICompatTests(unittest.TestCase):
         model = resolve_model("google/gemini-3.1-pro-preview")
 
         self.assertEqual(model.agent_id, GEMINI_THINKER_AGENT_ID)
-        self.assertEqual(model.parent_agent_id, "base2-free-kimi")
-        self.assertEqual(model.session_id, "moonshotai/kimi-k2.7-code")
+        self.assertEqual(model.parent_agent_id, "base2-free-mimo")
+        self.assertEqual(model.session_id, "mimo/mimo-v2.5")
         self.assertEqual(model.upstream_id, "google/gemini-3.1-pro-preview")
 
     def test_resolve_gemini_flash_lite_runs_under_session_root(self) -> None:
         model = resolve_model("google/gemini-2.5-flash-lite")
 
         self.assertEqual(model.agent_id, "file-picker")
-        self.assertEqual(model.parent_agent_id, "base2-free-deepseek-flash")
-        self.assertEqual(model.session_id, "deepseek/deepseek-v4-flash")
+        self.assertEqual(model.parent_agent_id, "base2-free-mimo")
+        self.assertEqual(model.session_id, "mimo/mimo-v2.5")
 
-    def test_resolve_gemini_flash_preview_uses_program_default_agent(self) -> None:
+    def test_resolve_gemini_flash_preview_uses_mimo_parent_agent(self) -> None:
         model = resolve_model("google/gemini-3.1-flash-lite-preview")
 
         self.assertEqual(model.agent_id, "file-picker-max")
-        self.assertEqual(model.parent_agent_id, "base2-free-deepseek-flash")
+        self.assertEqual(model.parent_agent_id, "base2-free-mimo")
         self.assertEqual(model.upstream_id, "google/gemini-3.1-flash-lite-preview")
 
     def test_agent_validation_payload_defines_spawnable_agents(self) -> None:
