@@ -64,22 +64,38 @@ GEMINI_FREE_MODELS: tuple[FreebuffModel, ...] = (
 
 ALL_MODELS = FREEBUFF_MODELS + GEMINI_FREE_MODELS
 
+# Runtime-discovered models from upstream Codebuff. Populated at app startup.
+_DYNAMIC_MODELS: tuple[FreebuffModel, ...] | None = None
+
+
+def set_dynamic_models(models: list[FreebuffModel]) -> None:
+    """Replace the active model list with dynamically discovered models."""
+    global _DYNAMIC_MODELS
+    _DYNAMIC_MODELS = tuple(models)
+
+
+def get_active_models() -> tuple[FreebuffModel, ...]:
+    """Return the currently active model list (dynamic or hardcoded fallback)."""
+    return _DYNAMIC_MODELS if _DYNAMIC_MODELS else ALL_MODELS
+
 
 def resolve_model(requested: str | None) -> FreebuffModel:
+    active = get_active_models()
     if not requested:
-        return DEFAULT_MODEL
-    for model in ALL_MODELS:
+        return active[0]
+    for model in active:
         if model.id == requested:
             return model
     # fallback: match by suffix for clients that omit provider prefix
     suffix = f"/{requested}"
-    for model in ALL_MODELS:
+    for model in active:
         if model.id.endswith(suffix):
             return model
     raise ValueError(f"Unsupported Freebuff model: {requested}")
 
 
 def models_response() -> dict[str, object]:
+    active = get_active_models()
     return {
         "object": "list",
         "data": [
@@ -89,15 +105,16 @@ def models_response() -> dict[str, object]:
                 "created": 0,
                 "owned_by": model.owned_by,
             }
-            for model in ALL_MODELS
+            for model in active
         ],
     }
 
 
 def agent_validation_payload() -> dict[str, object]:
+    active = get_active_models()
     models_by_agent: dict[str, FreebuffModel] = {}
     spawnable_by_agent: dict[str, set[str]] = {}
-    for model in ALL_MODELS:
+    for model in active:
         models_by_agent.setdefault(model.agent_id, model)
         spawnable_by_agent.setdefault(model.agent_id, set()).add(CONTEXT_PRUNER_AGENT_ID)
         if model.parent_agent_id:
@@ -115,7 +132,7 @@ def agent_validation_payload() -> dict[str, object]:
     definitions.append(
         _agent_definition(
             agent_id=CONTEXT_PRUNER_AGENT_ID,
-            model_id=DEFAULT_MODEL.id,
+            model_id=active[0].id,
             display_name="Context Pruner",
             spawnable_agents=[],
         )

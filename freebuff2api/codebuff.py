@@ -12,7 +12,7 @@ import httpx
 
 from .config import HAR_BROWSER_USER_AGENT, Settings
 from .logging_config import redact_headers, render_debug
-from .models import agent_validation_payload
+from .models import FreebuffModel, agent_validation_payload
 
 
 logger = logging.getLogger("freebuff2api.codebuff")
@@ -190,6 +190,38 @@ class CodebuffClient:
             "/api/healthz",
             headers=self._headers(require_auth=False),
         )
+
+    async def fetch_available_models(self) -> list[FreebuffModel]:
+        """Fetch available models from the upstream Codebuff API."""
+        data = await self._json(
+            "GET",
+            self.settings.models_api_path,
+            headers=self._headers(),
+        )
+        models: list[FreebuffModel] = []
+        for item in data.get("data", []):
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id")
+            if not model_id:
+                continue
+            # Upstream may expose agent_id directly or nest it under meta/agent
+            agent_id = item.get("agent_id") or item.get("agentId") or model_id
+            owned_by = item.get("owned_by") or item.get("ownedBy") or "freebuff"
+            upstream_model_id = item.get("upstream_model_id") or item.get("upstreamModelId")
+            session_model_id = item.get("session_model_id") or item.get("sessionModelId")
+            parent_agent_id = item.get("parent_agent_id") or item.get("parentAgentId")
+            models.append(
+                FreebuffModel(
+                    id=model_id,
+                    agent_id=agent_id,
+                    owned_by=owned_by,
+                    upstream_model_id=upstream_model_id,
+                    session_model_id=session_model_id,
+                    parent_agent_id=parent_agent_id,
+                )
+            )
+        return models
 
     async def get_session(self, instance_id: str | None = None) -> dict[str, Any]:
         headers_extra = {}

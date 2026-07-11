@@ -46,6 +46,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.codebuff = accounts.default_client
     app.state.sessions = accounts.default_sessions
     logger.info("configured freebuff accounts count=%s", accounts.account_count)
+
+    # Discover available models from upstream Codebuff; fall back to hardcoded list.
+    try:
+        remote_models = await accounts.default_client.fetch_available_models()
+        if remote_models:
+            from .models import set_dynamic_models
+            set_dynamic_models(remote_models)
+            logger.info("discovered %s upstream models", len(remote_models))
+    except Exception as error:
+        logger.warning(
+            "failed to fetch upstream models, using hardcoded list: %s",
+            error,
+            exc_info=settings.debug,
+        )
+
     try:
         yield
     finally:

@@ -307,6 +307,54 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured_headers["host"], "www.codebuff.com")
         self.assertEqual(captured_headers["accept-encoding"], CODEBUFF_ACCEPT_ENCODING)
 
+    async def test_fetch_available_models_parses_upstream_response(self) -> None:
+        def models_response(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "custom/model-a",
+                            "agent_id": "agent-a",
+                            "owned_by": "custom",
+                        },
+                        {
+                            "id": "custom/model-b",
+                            "agentId": "agent-b",
+                            "ownedBy": "other",
+                            "upstreamModelId": "upstream/b",
+                        },
+                    ]
+                },
+            )
+
+        client = CodebuffClient(
+            Settings(
+                codebuff_token="token",
+                local_api_key=None,
+                request_timeout=1,
+                models_api_path="/api/v1/models",
+            )
+        )
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(models_response),
+            timeout=1,
+        )
+
+        try:
+            models = await client.fetch_available_models()
+        finally:
+            await client.aclose()
+
+        self.assertEqual(len(models), 2)
+        self.assertEqual(models[0].id, "custom/model-a")
+        self.assertEqual(models[0].agent_id, "agent-a")
+        self.assertEqual(models[0].owned_by, "custom")
+        self.assertEqual(models[1].id, "custom/model-b")
+        self.assertEqual(models[1].agent_id, "agent-b")
+        self.assertEqual(models[1].upstream_id, "upstream/b")
+
 
 if __name__ == "__main__":
     unittest.main()

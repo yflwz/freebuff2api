@@ -5,9 +5,12 @@ from freebuff2api.models import (
     ALL_MODELS,
     CONTEXT_PRUNER_AGENT_ID,
     GEMINI_THINKER_AGENT_ID,
+    FreebuffModel,
     agent_validation_payload,
+    get_active_models,
     models_response,
     resolve_model,
+    set_dynamic_models,
 )
 from freebuff2api.openai_compat import (
     CompletionAccumulator,
@@ -241,6 +244,41 @@ class OpenAICompatTests(unittest.TestCase):
         delta = chunk["choices"][0]["delta"]
         self.assertNotIn("content", delta)
         self.assertEqual(delta["reasoning_content"], "hello")
+
+
+class DynamicModelsTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        # Reset dynamic models so other tests are not affected
+        set_dynamic_models(list(ALL_MODELS))
+
+    def test_set_dynamic_models_overrides_active_models(self) -> None:
+        set_dynamic_models([FreebuffModel("custom/model", "custom-agent")])
+        active = get_active_models()
+        self.assertEqual(len(active), 1)
+        self.assertEqual(active[0].id, "custom/model")
+
+    def test_resolve_model_uses_dynamic_models(self) -> None:
+        set_dynamic_models([FreebuffModel("custom/model", "custom-agent")])
+        model = resolve_model("custom/model")
+        self.assertEqual(model.agent_id, "custom-agent")
+
+    def test_models_response_uses_dynamic_models(self) -> None:
+        set_dynamic_models([FreebuffModel("a/b", "agent-a"), FreebuffModel("c/d", "agent-c")])
+        response = models_response()
+        self.assertEqual([item["id"] for item in response["data"]], ["a/b", "c/d"])
+
+    def test_agent_validation_payload_uses_dynamic_models(self) -> None:
+        set_dynamic_models([FreebuffModel("a/b", "agent-a"), FreebuffModel("c/d", "agent-c")])
+        payload = agent_validation_payload()
+        ids = {definition["id"] for definition in payload["agentDefinitions"]}
+        self.assertIn("agent-a", ids)
+        self.assertIn("agent-c", ids)
+
+    def test_resolve_model_falls_back_to_hardcoded_when_dynamic_empty(self) -> None:
+        set_dynamic_models([])
+        # empty dynamic list should be ignored and fallback used
+        model = resolve_model("moonshotai/kimi-k2.6")
+        self.assertEqual(model.agent_id, "base2-free-kimi")
 
 
 if __name__ == "__main__":

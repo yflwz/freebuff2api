@@ -35,6 +35,7 @@ class Settings:
     port: int = 8000
     proxy_enabled: bool = False
     proxy_url: str | None = None
+    models_api_path: str = "/api/v1/models"
     timezone: str = "Asia/Shanghai"
     locale: str = "zh-CN"
     os_name: str = "windows"
@@ -111,6 +112,7 @@ def load_settings() -> Settings:
         port=_int("FREEBUFF_PORT", 8000),
         proxy_enabled=_bool("FREEBUFF_PROXY_ENABLED", False),
         proxy_url=os.getenv("FREEBUFF_PROXY_URL"),
+        models_api_path=os.getenv("FREEBUFF_MODELS_API_PATH", "/api/v1/models"),
         timezone=os.getenv("FREEBUFF_TIMEZONE", "Asia/Shanghai"),
         locale=os.getenv("FREEBUFF_LOCALE", "zh-CN"),
         os_name=os.getenv("FREEBUFF_OS", "windows"),
