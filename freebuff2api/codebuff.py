@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
@@ -76,6 +77,34 @@ class FreebuffSessionLease:
         self._lock.release()
 
 
+@dataclass(frozen=True)
+class RateLimit:
+    """Cached upstream 429 rate limit, keyed by upstream model id.
+
+    Captured from the upstream response body so subsequent requests for the
+    same model can fail fast during the rate-limit window instead of
+    performing the full setup pipeline (get_session, delete_session,
+    create_session, request_ad_chain, validate_agents, start_run chain).
+    """
+
+    model: str
+    reset_at: datetime
+    retry_after_ms: int
+    raw_body: str
+    # Original message prefix (e.g. "Codebuff request failed" vs
+    # "Codebuff chat failed") so re-raised errors mirror the first failure.
+    prefix: str = "Codebuff request failed"
+
+    @property
+    def is_active(self) -> bool:
+        # reset_at is timezone-aware UTC; compare against now in UTC.
+        return datetime.now(tz=timezone.utc) < self.reset_at
+
+    def format_error(self) -> str:
+        # Reuse the upstream body verbatim so clients see the same shape.
+        return f"{self.prefix}: 429 {self.raw_body}"
+
+
 class CodebuffClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -87,6 +116,10 @@ class CodebuffClient:
         )
         self._agents_validated = False
         self._validate_lock = asyncio.Lock()
+        # Per-token cache of upstream 429 rate limits keyed by upstream model id.
+        # Populated lazily as 429 responses are observed; consulted before any
+        # session/rerun/chat setup to fail fast during the rate-limit window.
+        self._rate_limit_cache: dict[str, RateLimit] = {}
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -150,10 +183,67 @@ class CodebuffClient:
                 render_debug(response.text, self.settings.log_body_chars),
             )
         if response.status_code >= 400:
+            self._maybe_record_rate_limit(response.status_code, response.text)
             raise _upstream_error(response)
         if not response.content:
             return {}
         return response.json()
+
+    def _maybe_record_rate_limit(
+        self,
+        status_code: int,
+        text: str,
+        *,
+        prefix: str = "Codebuff request failed",
+    ) -> None:
+        """If ``text`` looks like a 429 rate-limit response, cache it.
+
+        The upstream body has the shape::
+            {"model": "moonshotai/kimi-k2.7-code",
+             "resetAt": "2026-07-12T07:00:00.000Z",
+             "retryAfterMs": 42504679, "limit": 5, ...}
+        ``resetAt`` is preferred; we fall back to ``retryAfterMs`` from now.
+        Non-429 4xx responses are silently skipped after the JSON parse.
+        """
+        if status_code != 429 or not text:
+            return
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        model = data.get("model")
+        if not isinstance(model, str) or not model:
+            return
+        retry_after_raw = data.get("retryAfterMs")
+        retry_after_ms = (
+            int(retry_after_raw)
+            if isinstance(retry_after_raw, (int, float))
+            else 0
+        )
+        reset_at = _parse_rate_limit_reset(data.get("resetAt"))
+        if reset_at is None and retry_after_ms > 0:
+            reset_at = datetime.now(tz=timezone.utc) + timedelta(
+                milliseconds=retry_after_ms
+            )
+        if reset_at is None:
+            return
+        self._rate_limit_cache[model] = RateLimit(
+            model=model,
+            reset_at=reset_at,
+            retry_after_ms=retry_after_ms,
+            raw_body=text[:500],
+            prefix=prefix,
+        )
+        if self.settings.debug:
+            logger.debug(
+                "cached upstream 429 rate limit model=%s reset_at=%s retry_after_ms=%s prefix=%s",
+                model,
+                reset_at.isoformat(),
+                retry_after_ms,
+                prefix,
+            )
 
     async def validate_agents(self) -> None:
         if self._agents_validated:
@@ -519,6 +609,11 @@ class CodebuffClient:
                     )
                 if response.status_code >= 400:
                     text = await response.aread()
+                    self._maybe_record_rate_limit(
+                        response.status_code,
+                        text.decode("utf-8", errors="replace"),
+                        prefix="Codebuff chat failed",
+                    )
                     raise _upstream_error(
                         response,
                         body=text,
@@ -581,6 +676,21 @@ class SessionManager:
         model: str,
         messages: list[dict[str, Any]] | None = None,
     ) -> FreebuffSession:
+        # Fail fast on a cached upstream 429 so retries during the rate-limit
+        # window skip the full setup pipeline (get_session, delete_session,
+        # create_session, request_ad_chain, validate_agents, start_run chain).
+        # ``getattr`` keeps duck-typed test mocks (which don't subclass
+        # ``CodebuffClient``) compatible without forcing a constructor change.
+        rate_limit_cache = getattr(self.client, "_rate_limit_cache", None) or {}
+        cached_rate_limit = rate_limit_cache.get(model)
+        if cached_rate_limit and cached_rate_limit.is_active:
+            logger.warning(
+                "skipping freebuff session due to cached 429 model=%s reset_at=%s",
+                model,
+                cached_rate_limit.reset_at.isoformat(),
+            )
+            raise CodebuffError(cached_rate_limit.format_error(), 429)
+
         cached = self._sessions.get(model)
         if cached and cached.is_fresh:
             try:
@@ -854,6 +964,17 @@ def _network_error(method: str, url: str, error: httpx.RequestError) -> Codebuff
         f"({type(error).__name__}){suffix}",
         502,
     )
+
+
+def _parse_rate_limit_reset(value: Any) -> datetime | None:
+    """Parse the ``resetAt`` field from a 429 body into a UTC datetime."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        # Upstream uses ISO-8601 with a trailing 'Z'; fromisoformat needs '+00:00'.
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _upstream_error(
