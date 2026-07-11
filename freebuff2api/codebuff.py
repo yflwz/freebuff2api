@@ -1004,9 +1004,24 @@ def _upstream_error(
             data = {}
         if data.get("error") == "session_model_mismatch":
             upstream_message = data.get("message") or text
+            # The geo-restriction hint ("请换用 US 服务器...") only makes
+            # sense for the DeepSeek-V4-Flash-limited-access case. The
+            # upstream reuses the same ``session_model_mismatch`` error
+            # code for unrelated binding errors (e.g. ``This session is
+            # bound to mimo/mimo-v2.5; restart freebuff to switch
+            # models``) where appending the hint is actively misleading.
+            # The "mimo" guard is a defensive belt-and-suspenders against
+            # upstream wording changes silently re-enabling the suffix
+            # for unrelated errors.
+            if (
+                "DeepSeek V4 Flash" in upstream_message
+                and "mimo" not in upstream_message
+            ):
+                upstream_message += (
+                    " 当前 IP/区域受限；请换用 US 服务器或 US 出口 IP 后重试。"
+                )
             return CodebuffError(
-                "Codebuff 409 session_model_mismatch: "
-                f"{upstream_message} 当前 IP/区域受限；请换用 US 服务器或 US 出口 IP 后重试。",
+                f"Codebuff 409 session_model_mismatch: {upstream_message}",
                 409,
             )
 

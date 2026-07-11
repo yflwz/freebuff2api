@@ -35,42 +35,38 @@ FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
 
 DEFAULT_MODEL = FREEBUFF_MODELS[0]
 CONTEXT_PRUNER_AGENT_ID = "context-pruner"
-GEMINI_THINKER_AGENT_ID = "thinker-with-files-gemini"
-# All "free" Gemini variants route their quota pool + parent lineage onto
-# mimo/mimo-v2.5 (unlimited upstream) instead of kimi's 5/day pool. Chat
-# dispatch (agent_id) is unchanged so users still get the Gemini-flavored
-# responses; only the rate-limit counter and parent agent move to mimo.
-GEMINI_SESSION_MODEL_ID = "mimo/mimo-v2.5"
-GEMINI_PARENT_AGENT_ID = "base2-free-mimo"
-# Backwards-compatible aliases for downstream test imports / external
-# callers that still reference the older constants by name.
-GEMINI_THINKER_PARENT_AGENT_ID = GEMINI_PARENT_AGENT_ID
-GEMINI_THINKER_PARENT_MODEL_ID = GEMINI_SESSION_MODEL_ID
-GEMINI_FLASH_LITE_SESSION_MODEL_ID = GEMINI_SESSION_MODEL_ID
+# All "free" Gemini variants are thin aliases over mimo/mimo-v2.5 — same
+# session quota pool, same chat dispatch agent. The gemini label is
+# preserved for display / model listing, but every chat completion is
+# routed through MiMo 2.5 upstream. This avoids the upstream's
+# session_model_mismatch 409 (which fires whenever the chat payload's
+# model field disagrees with the bound session) and the kimi 5/day limit.
+GEMINI_AGENT_ID = "base2-free-mimo"
+GEMINI_UPSTREAM_MODEL_ID = "mimo/mimo-v2.5"
 
 GEMINI_FREE_MODELS: tuple[FreebuffModel, ...] = (
     FreebuffModel(
         "google/gemini-2.5-flash-lite",
-        "file-picker",
+        GEMINI_AGENT_ID,
         owned_by="google",
-        session_model_id=GEMINI_SESSION_MODEL_ID,
-        parent_agent_id=GEMINI_PARENT_AGENT_ID,
+        upstream_model_id=GEMINI_UPSTREAM_MODEL_ID,
+        session_model_id=GEMINI_UPSTREAM_MODEL_ID,
         display_name="Gemini 2.5 Flash Lite",
     ),
     FreebuffModel(
         "google/gemini-3.1-flash-lite-preview",
-        "file-picker-max",
+        GEMINI_AGENT_ID,
         owned_by="google",
-        session_model_id=GEMINI_SESSION_MODEL_ID,
-        parent_agent_id=GEMINI_PARENT_AGENT_ID,
+        upstream_model_id=GEMINI_UPSTREAM_MODEL_ID,
+        session_model_id=GEMINI_UPSTREAM_MODEL_ID,
         display_name="Gemini 3.1 Flash Lite Preview",
     ),
     FreebuffModel(
         "google/gemini-3.1-pro-preview",
-        GEMINI_THINKER_AGENT_ID,
+        GEMINI_AGENT_ID,
         owned_by="google",
-        session_model_id=GEMINI_THINKER_PARENT_MODEL_ID,
-        parent_agent_id=GEMINI_THINKER_PARENT_AGENT_ID,
+        upstream_model_id=GEMINI_UPSTREAM_MODEL_ID,
+        session_model_id=GEMINI_UPSTREAM_MODEL_ID,
         display_name="Gemini 3.1 Pro Preview",
     ),
 )

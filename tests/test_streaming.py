@@ -122,7 +122,9 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def test_gemini_thinker_run_chain_uses_child_as_payload_run(self) -> None:
+    async def test_gemini_pro_run_chain_has_no_parent_agent(self) -> None:
+        # Option B: gemini-pro is now a thin mimo alias (no parent_agent_id),
+        # so the standard no-parent chain fires: base2-free-mimo + context-pruner.
         client = FakeClient()
 
         run = await _start_freebuff_run_chain(
@@ -131,15 +133,15 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(run.run_id, "run-1")
-        self.assertEqual(run.chat_run_id, "run-2")
-        self.assertEqual(run.payload_run_id, "run-2")
+        self.assertIsNone(run.chat_run_id)
+        self.assertEqual(run.payload_run_id, "run-1")
         self.assertEqual(client.calls[0], ("start", "base2-free-mimo", [], "run-1"))
         self.assertEqual(
             client.calls[1],
-            ("start", "thinker-with-files-gemini", ["run-1"], "run-2"),
+            ("start", "context-pruner", ["run-1"], "run-2"),
         )
 
-    async def test_gemini_flash_lite_run_chain_uses_session_root_parent(self) -> None:
+    async def test_gemini_flash_lite_run_chain_has_no_parent_agent(self) -> None:
         client = FakeClient()
 
         run = await _start_freebuff_run_chain(
@@ -148,15 +150,15 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(run.run_id, "run-1")
-        self.assertEqual(run.chat_run_id, "run-2")
-        self.assertEqual(run.payload_run_id, "run-2")
+        self.assertIsNone(run.chat_run_id)
+        self.assertEqual(run.payload_run_id, "run-1")
         self.assertEqual(
             client.calls[0],
             ("start", "base2-free-mimo", [], "run-1"),
         )
         self.assertEqual(
             client.calls[1],
-            ("start", "file-picker", ["run-1"], "run-2"),
+            ("start", "context-pruner", ["run-1"], "run-2"),
         )
 
     async def test_streaming_codebuff_error_is_returned_as_sse_error(self) -> None:

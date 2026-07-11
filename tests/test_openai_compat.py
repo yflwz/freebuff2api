@@ -4,7 +4,7 @@ from freebuff2api.codebuff import FreebuffSession
 from freebuff2api.models import (
     ALL_MODELS,
     CONTEXT_PRUNER_AGENT_ID,
-    GEMINI_THINKER_AGENT_ID,
+    GEMINI_AGENT_ID,
     FreebuffModel,
     agent_validation_payload,
     get_active_models,
@@ -65,27 +65,37 @@ class OpenAICompatTests(unittest.TestCase):
 
         self.assertEqual(model.agent_id, "base2-free-minimax-m3")
 
-    def test_resolve_gemini_model_maps_allowed_agent_combo(self) -> None:
+    def test_resolve_gemini_pro_routes_via_mimo(self) -> None:
+        # Option B: gemini-pro is a thin alias for mimo/mimo-v2.5. Same
+        # session quota pool, same chat dispatch agent, no parent lineage.
+        # This avoids the upstream's session_model_mismatch 409 (chat
+        # payload's model field must equal the bound session model's id).
         model = resolve_model("google/gemini-3.1-pro-preview")
 
-        self.assertEqual(model.agent_id, GEMINI_THINKER_AGENT_ID)
-        self.assertEqual(model.parent_agent_id, "base2-free-mimo")
+        self.assertEqual(model.agent_id, GEMINI_AGENT_ID)
+        self.assertIsNone(model.parent_agent_id)
         self.assertEqual(model.session_id, "mimo/mimo-v2.5")
-        self.assertEqual(model.upstream_id, "google/gemini-3.1-pro-preview")
+        self.assertEqual(model.upstream_id, "mimo/mimo-v2.5")
+        # Contract we depend on upstream: chat payload's model field must
+        # equal the bound session model's id; desyncing them brings back
+        # the upstream 409 session_model_mismatch.
+        self.assertEqual(model.upstream_id, model.session_id)
 
-    def test_resolve_gemini_flash_lite_runs_under_session_root(self) -> None:
+    def test_resolve_gemini_flash_lite_routes_via_mimo(self) -> None:
         model = resolve_model("google/gemini-2.5-flash-lite")
 
-        self.assertEqual(model.agent_id, "file-picker")
-        self.assertEqual(model.parent_agent_id, "base2-free-mimo")
+        self.assertEqual(model.agent_id, GEMINI_AGENT_ID)
+        self.assertIsNone(model.parent_agent_id)
         self.assertEqual(model.session_id, "mimo/mimo-v2.5")
+        self.assertEqual(model.upstream_id, model.session_id)
 
-    def test_resolve_gemini_flash_preview_uses_mimo_parent_agent(self) -> None:
+    def test_resolve_gemini_flash_preview_routes_via_mimo(self) -> None:
         model = resolve_model("google/gemini-3.1-flash-lite-preview")
 
-        self.assertEqual(model.agent_id, "file-picker-max")
-        self.assertEqual(model.parent_agent_id, "base2-free-mimo")
-        self.assertEqual(model.upstream_id, "google/gemini-3.1-flash-lite-preview")
+        self.assertEqual(model.agent_id, GEMINI_AGENT_ID)
+        self.assertIsNone(model.parent_agent_id)
+        self.assertEqual(model.upstream_id, "mimo/mimo-v2.5")
+        self.assertEqual(model.upstream_id, model.session_id)
 
     def test_agent_validation_payload_defines_spawnable_agents(self) -> None:
         payload = agent_validation_payload()
