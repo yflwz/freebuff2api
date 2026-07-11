@@ -192,33 +192,32 @@ class CodebuffClient:
         )
 
     async def fetch_available_models(self) -> list[FreebuffModel]:
-        """Fetch available models from the upstream Codebuff API."""
+        """Fetch available models from the upstream Codebuff API.
+
+        The session endpoint returns available models under ``rateLimitsByModel``;
+        each key is a model id like ``moonshotai/kimi-k2.7-code``.
+        """
         data = await self._json(
             "GET",
             self.settings.models_api_path,
             headers=self._headers(),
         )
         models: list[FreebuffModel] = []
-        for item in data.get("data", []):
-            if not isinstance(item, dict):
-                continue
-            model_id = item.get("id")
+        rate_limits = data.get("rateLimitsByModel") or {}
+        for model_id, info in rate_limits.items():
             if not model_id:
                 continue
-            # Upstream may expose agent_id directly or nest it under meta/agent
-            agent_id = item.get("agent_id") or item.get("agentId") or model_id
-            owned_by = item.get("owned_by") or item.get("ownedBy") or "freebuff"
-            upstream_model_id = item.get("upstream_model_id") or item.get("upstreamModelId")
-            session_model_id = item.get("session_model_id") or item.get("sessionModelId")
-            parent_agent_id = item.get("parent_agent_id") or item.get("parentAgentId")
+            owned_by = "freebuff"
+            if isinstance(info, dict):
+                owned_by = info.get("owned_by") or info.get("ownedBy") or owned_by
+            # Map upstream model id to the agent id used by Codebuff.
+            # Freebuff session creation expects the raw upstream model id as the
+            # x-freebuff-model header, so agent_id defaults to model_id.
             models.append(
                 FreebuffModel(
                     id=model_id,
-                    agent_id=agent_id,
+                    agent_id=model_id,
                     owned_by=owned_by,
-                    upstream_model_id=upstream_model_id,
-                    session_model_id=session_model_id,
-                    parent_agent_id=parent_agent_id,
                 )
             )
         return models

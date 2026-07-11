@@ -307,24 +307,19 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured_headers["host"], "www.codebuff.com")
         self.assertEqual(captured_headers["accept-encoding"], CODEBUFF_ACCEPT_ENCODING)
 
-    async def test_fetch_available_models_parses_upstream_response(self) -> None:
-        def models_response(request: httpx.Request) -> httpx.Response:
+    async def test_fetch_available_models_parses_session_rate_limits(self) -> None:
+        def session_response(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 200,
                 json={
-                    "data": [
-                        {
-                            "id": "custom/model-a",
-                            "agent_id": "agent-a",
-                            "owned_by": "custom",
-                        },
-                        {
-                            "id": "custom/model-b",
-                            "agentId": "agent-b",
-                            "ownedBy": "other",
-                            "upstreamModelId": "upstream/b",
-                        },
-                    ]
+                    "status": "active",
+                    "instanceId": "test-instance",
+                    "model": "moonshotai/kimi-k2.7-code",
+                    "rateLimitsByModel": {
+                        "moonshotai/kimi-k2.7-code": {"limit": 5, "period": "pacific_day"},
+                        "deepseek/deepseek-v4-pro": {"limit": 5, "period": "pacific_day"},
+                        "tencent/hy3:free": {"limit": 999, "period": "pacific_day"},
+                    },
                 },
             )
 
@@ -333,12 +328,12 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
                 codebuff_token="token",
                 local_api_key=None,
                 request_timeout=1,
-                models_api_path="/api/v1/models",
+                models_api_path="/api/v1/freebuff/session",
             )
         )
         await client._client.aclose()
         client._client = httpx.AsyncClient(
-            transport=httpx.MockTransport(models_response),
+            transport=httpx.MockTransport(session_response),
             timeout=1,
         )
 
@@ -347,13 +342,10 @@ class CodebuffClientTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.aclose()
 
-        self.assertEqual(len(models), 2)
-        self.assertEqual(models[0].id, "custom/model-a")
-        self.assertEqual(models[0].agent_id, "agent-a")
-        self.assertEqual(models[0].owned_by, "custom")
-        self.assertEqual(models[1].id, "custom/model-b")
-        self.assertEqual(models[1].agent_id, "agent-b")
-        self.assertEqual(models[1].upstream_id, "upstream/b")
+        ids = {model.id for model in models}
+        self.assertEqual(ids, {"moonshotai/kimi-k2.7-code", "deepseek/deepseek-v4-pro", "tencent/hy3:free"})
+        for model in models:
+            self.assertEqual(model.agent_id, model.id)
 
 
 if __name__ == "__main__":
