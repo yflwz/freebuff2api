@@ -278,11 +278,20 @@ class DynamicModelsTests(unittest.TestCase):
         # Reset dynamic models so other tests are not affected
         set_dynamic_models(list(ALL_MODELS))
 
-    def test_set_dynamic_models_overrides_active_models(self) -> None:
+    def test_set_dynamic_models_merges_with_hardcoded_models(self) -> None:
         set_dynamic_models([FreebuffModel("custom/model", "custom-agent")])
         active = get_active_models()
-        self.assertEqual(len(active), 1)
-        self.assertEqual(active[0].id, "custom/model")
+        ids = [model.id for model in active]
+        self.assertIn("custom/model", ids)
+        self.assertIn("deepseek/deepseek-v4-flash", ids)
+        self.assertIn("google/gemini-3.1-pro-preview", ids)
+
+    def test_dynamic_models_take_precedence_over_hardcoded_duplicates(self) -> None:
+        set_dynamic_models([FreebuffModel("deepseek/deepseek-v4-flash", "custom-agent", display_name="Custom Flash")])
+        active = get_active_models()
+        flash = [model for model in active if model.id == "deepseek/deepseek-v4-flash"][0]
+        self.assertEqual(flash.agent_id, "custom-agent")
+        self.assertEqual(flash.display_name, "Custom Flash")
 
     def test_resolve_model_uses_dynamic_models(self) -> None:
         set_dynamic_models([FreebuffModel("custom/model", "custom-agent")])
@@ -292,7 +301,10 @@ class DynamicModelsTests(unittest.TestCase):
     def test_models_response_uses_dynamic_models(self) -> None:
         set_dynamic_models([FreebuffModel("a/b", "agent-a"), FreebuffModel("c/d", "agent-c")])
         response = models_response()
-        self.assertEqual([item["id"] for item in response["data"]], ["a/b", "c/d"])
+        ids = [item["id"] for item in response["data"]]
+        self.assertIn("a/b", ids)
+        self.assertIn("c/d", ids)
+        self.assertIn("deepseek/deepseek-v4-flash", ids)
 
     def test_agent_validation_payload_uses_dynamic_models(self) -> None:
         set_dynamic_models([FreebuffModel("a/b", "agent-a"), FreebuffModel("c/d", "agent-c")])
@@ -306,6 +318,11 @@ class DynamicModelsTests(unittest.TestCase):
         # empty dynamic list should be ignored and fallback used
         model = resolve_model("moonshotai/kimi-k2.7-code")
         self.assertEqual(model.agent_id, "base2-free-kimi")
+
+    def test_empty_dynamic_models_falls_back_to_all_models(self) -> None:
+        set_dynamic_models([])
+        active = get_active_models()
+        self.assertEqual(active, ALL_MODELS)
 
 
 if __name__ == "__main__":

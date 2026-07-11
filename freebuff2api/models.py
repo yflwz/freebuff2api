@@ -120,8 +120,20 @@ def set_dynamic_models(models: list[FreebuffModel]) -> None:
 
 
 def get_active_models() -> tuple[FreebuffModel, ...]:
-    """Return the currently active model list (dynamic or hardcoded fallback)."""
-    return _DYNAMIC_MODELS if _DYNAMIC_MODELS else ALL_MODELS
+    """Return the merged active model list.
+
+    Hardcoded models are always included so that special agents (e.g. Gemini
+    free models) remain available even when upstream discovery omits them.
+    Dynamically discovered models take precedence when ids overlap.
+    """
+    if not _DYNAMIC_MODELS:
+        return ALL_MODELS
+    dynamic_by_id = {model.id: model for model in _DYNAMIC_MODELS}
+    merged: list[FreebuffModel] = list(_DYNAMIC_MODELS)
+    for model in ALL_MODELS:
+        if model.id not in dynamic_by_id:
+            merged.append(model)
+    return tuple(merged)
 
 
 def resolve_model(requested: str | None) -> FreebuffModel:
