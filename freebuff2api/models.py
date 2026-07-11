@@ -83,9 +83,9 @@ _PROVIDER_AGENT_MAP: dict[str, str] = {
 # Explicit display-name aliases for upstream model ids that don't map cleanly
 # to a human-readable name via the generic derivation logic.
 _DISPLAY_NAME_ALIASES: dict[str, str] = {
-    "tencent/hy3:free": "GLM 5.2",
     "tencent/hy3": "GLM 5.2",
-    "tencent/hy3.free": "GLM 5.2",
+    "tencent/hy3:free": "GLM 5.2 Free",
+    "tencent/hy3.free": "GLM 5.2 Free",
 }
 
 

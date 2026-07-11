@@ -51,9 +51,9 @@ class OpenAICompatTests(unittest.TestCase):
     def test_derive_display_name_handles_dotted_tencent_variant(self) -> None:
         from freebuff2api.models import derive_display_name
 
-        self.assertEqual(derive_display_name("tencent/hy3.free"), "GLM 5.2")
-        self.assertEqual(derive_display_name("tencent/hy3:free"), "GLM 5.2")
         self.assertEqual(derive_display_name("tencent/hy3"), "GLM 5.2")
+        self.assertEqual(derive_display_name("tencent/hy3:free"), "GLM 5.2 Free")
+        self.assertEqual(derive_display_name("tencent/hy3.free"), "GLM 5.2 Free")
 
     def test_resolve_model_maps_agent_id(self) -> None:
         model = resolve_model("moonshotai/kimi-k2.7-code")
