@@ -141,6 +141,39 @@ class ResponsesCompatStreamTests(unittest.TestCase):
         msg_output = completed[0]["response"]["output"][0]
         self.assertEqual(msg_output["content"][0]["text"], "Hi there.")
 
+    def test_stream_event_sequence_is_complete(self) -> None:
+        """Verify the exact event ordering for a simple text response."""
+        state, events = _feed([
+            {"choices": [{"index": 0, "delta": {"content": "Hello"}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        ])
+        types = [t for t, _ in events]
+        self.assertEqual(types[0], "response.created")
+        self.assertEqual(types[1], "response.in_progress")
+        self.assertIn("response.output_item.added", types)
+        self.assertIn("response.content_part.added", types)
+        self.assertIn("response.output_text.delta", types)
+        self.assertIn("response.output_text.done", types)
+        self.assertIn("response.content_part.done", types)
+        self.assertIn("response.output_item.done", types)
+        self.assertEqual(types[-1], "response.completed")
+
+    def test_stream_reasoning_then_text_sequence(self) -> None:
+        state, events = _feed([
+            {"choices": [{"index": 0, "delta": {"reasoning_content": "think"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "answer"}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+        ])
+        types = [t for t, _ in events]
+        reasoning_added = types.index("response.output_item.added")
+        reasoning_delta = types.index("response.reasoning_text.delta")
+        text_delta = types.index("response.output_text.delta")
+        self.assertLess(reasoning_added, reasoning_delta)
+        self.assertLess(reasoning_delta, text_delta)
+        completed = next(e for t, e in events if t == "response.completed")
+        output_types = [item["type"] for item in completed["response"]["output"]]
+        self.assertEqual(output_types, ["reasoning", "message"])
+
     def test_emits_function_call_items_for_tool_calls(self) -> None:
         state, events = _feed([
             {"choices": [{"index": 0, "delta": {"content": "Let me check"}}]},
@@ -226,6 +259,50 @@ class ResponsesNonStreamingTests(unittest.TestCase):
         self.assertIn("reasoning", types)
         rs = next(item for item in response["output"] if item["type"] == "reasoning")
         self.assertEqual(rs["summary"][0]["text"], "thinking")
+
+
+class ResponsesToolLoopTests(unittest.TestCase):
+    def test_full_tool_loop_input(self) -> None:
+        """A complete tool loop: user asks, assistant calls, user gives output."""
+        history = [
+            {"role": "user", "content": "weather in Tokyo?"},
+            {"type": "function_call", "call_id": "c1", "name": "get_weather",
+             "arguments": '{"city":"Tokyo"}'},
+            {"type": "function_call_output", "call_id": "c1", "output": "Sunny 20C"},
+            {"role": "user", "content": "thanks"},
+        ]
+        msgs = _input_to_messages(history)
+        roles = [m["role"] for m in msgs]
+        self.assertEqual(roles.count("user"), 2)
+        self.assertEqual(roles.count("assistant"), 1)
+        self.assertEqual(roles.count("tool"), 1)
+        # assistant must come before tool
+        asst_idx = next(i for i, m in enumerate(msgs) if m["role"] == "assistant")
+        tool_idx = next(i for i, m in enumerate(msgs) if m["role"] == "tool")
+        self.assertLess(asst_idx, tool_idx)
+
+    def test_orphaned_function_call_output_is_skipped(self) -> None:
+        msgs = _input_to_messages([
+            {"type": "function_call_output", "call_id": "orphan", "output": "ignored"},
+        ])
+        # normalize_chat_messages prepends the default system message
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["role"], "system")
+
+    def test_empty_input_array(self) -> None:
+        msgs = _input_to_messages([])
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["role"], "system")
+
+    def test_malformed_items_are_ignored(self) -> None:
+        msgs = _input_to_messages([
+            {"type": "function_call", "call_id": "x"},
+            None,  # type: ignore[arg-type]
+            "not a dict",  # type: ignore[arg-type]
+        ])
+        # function_call without name is ignored; only default system message remains
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["role"], "system")
 
 
 if __name__ == "__main__":

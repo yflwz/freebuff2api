@@ -38,6 +38,26 @@ class SSETests(unittest.IsolatedAsyncioTestCase):
         frames = [frame async for frame in iter_sse_frames(response)]
         self.assertEqual(frames, [b"data: hello"])
 
+    async def test_iter_sse_frames_yields_done(self) -> None:
+        response = await self._make_response([b"data: [DONE]\n\n"])
+        frames = [frame async for frame in iter_sse_frames(response)]
+        self.assertEqual(frames, [b"data: [DONE]"])
+
+    async def test_iter_sse_frames_ignores_trailing_whitespace(self) -> None:
+        response = await self._make_response([b"data: hello\n\n   "])
+        frames = [frame async for frame in iter_sse_frames(response)]
+        self.assertEqual(frames, [b"data: hello"])
+
+    async def test_parse_sse_frame_joins_multiple_data_lines(self) -> None:
+        frame = b"data: {\"a\":\n\ndata: 1}\n\n"
+        data = parse_sse_frame(frame)
+        self.assertEqual(data, {"a": 1})
+
+    async def test_parse_sse_frame_ignores_event_field(self) -> None:
+        frame = b"event: message\ndata: {\"id\":\"1\"}"
+        data = parse_sse_frame(frame)
+        self.assertEqual(data, {"id": "1"})
+
     async def test_parse_sse_frame_extracts_json(self) -> None:
         frame = b"data: {\"id\":\"1\"}"
         data = parse_sse_frame(frame)
@@ -46,6 +66,10 @@ class SSETests(unittest.IsolatedAsyncioTestCase):
     def test_encode_sse(self) -> None:
         encoded = encode_sse({"id": "1"})
         self.assertIn(b"data: {\"id\":\"1\"}", encoded)
+
+    def test_parse_sse_frame_returns_none_for_empty(self) -> None:
+        self.assertIsNone(parse_sse_frame(b""))
+        self.assertIsNone(parse_sse_frame(b"event: ping"))
 
 
 if __name__ == "__main__":

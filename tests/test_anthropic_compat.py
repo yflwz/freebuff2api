@@ -104,6 +104,66 @@ class AnthropicToolTranslationTests(unittest.TestCase):
         )
 
 
+class AnthropicMultiTurnTests(unittest.TestCase):
+    def test_full_tool_loop_conversation(self) -> None:
+        """User asks, assistant calls tool, user gives result, assistant answers."""
+        msgs = normalize_messages([
+            {"role": "user", "content": "What's the weather?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me check."},
+                    {
+                        "type": "tool_use",
+                        "id": "tu_weather",
+                        "name": "get_weather",
+                        "input": {"city": "Tokyo"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu_weather",
+                        "content": "Sunny, 25C",
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "It's sunny in Tokyo."},
+        ])
+        roles = [m["role"] for m in msgs]
+        # normalize_chat_messages prepends a system message; tool_result becomes role="tool"
+        self.assertEqual(roles.count("user"), 1)
+        self.assertEqual(roles.count("assistant"), 2)
+        self.assertEqual(roles.count("tool"), 1)
+        tool_msg = next(m for m in msgs if m["role"] == "tool")
+        self.assertEqual(tool_msg["tool_call_id"], "tu_weather")
+        self.assertEqual(tool_msg["content"], "Sunny, 25C")
+
+    def test_system_as_list(self) -> None:
+        msgs = normalize_messages(
+            [{"role": "user", "content": "hi"}],
+            system=[{"type": "text", "text": "Be helpful."}],
+        )
+        system_msgs = [m for m in msgs if m["role"] == "system"]
+        self.assertEqual(len(system_msgs), 1)
+        # normalize_chat_messages prepends the Buffy identity override to system content
+        self.assertIn("Be helpful.", system_msgs[0]["content"])
+
+    def test_unsupported_role_coerced_to_user(self) -> None:
+        msgs = normalize_messages([{"role": "system", "content": "sys"}])
+        # normalize_chat_messages prepends a system message, so the coerced message is last
+        self.assertEqual(msgs[-1]["role"], "user")
+
+    def test_empty_messages(self) -> None:
+        msgs = normalize_messages([])
+        # normalize_chat_messages always prepends the default system message
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["role"], "system")
+
+
 class AnthropicStreamTests(unittest.TestCase):
     def test_stream_emits_message_start_once(self) -> None:
         state = AnthropicStreamState()
@@ -146,6 +206,72 @@ class AnthropicStreamTests(unittest.TestCase):
         types = [t for t, _ in events]
         self.assertIn("message_delta", types)
         self.assertIn("message_stop", types)
+
+    def test_stream_tool_use_sequence(self) -> None:
+        """Tool use should emit content_block_start with tool_use then input_json_delta."""
+        state = AnthropicStreamState()
+        events = anthropic_stream_events(
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "get_weather", "arguments": ""}},
+            ]}}]},
+            message_id="msg_1",
+            model="test-model",
+            started=0,
+            input_tokens=0,
+            state=state,
+        )
+        events += anthropic_stream_events(
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"city": "Tokyo"}'}},
+            ]}}]},
+            message_id="msg_1",
+            model="test-model",
+            started=0,
+            input_tokens=0,
+            state=state,
+        )
+        events += anthropic_stream_events(
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+            message_id="msg_1",
+            model="test-model",
+            started=0,
+            input_tokens=0,
+            state=state,
+        )
+        types = [t for t, _ in events]
+        self.assertIn("content_block_start", types)
+        self.assertIn("content_block_delta", types)
+        self.assertIn("content_block_stop", types)
+        self.assertIn("message_delta", types)
+        self.assertIn("message_stop", types)
+
+    def test_non_streaming_with_tool_calls(self) -> None:
+        from freebuff2api.anthropic_compat import build_non_streaming_response
+        resp = build_non_streaming_response(
+            {
+                "content": "Calling weather",
+                "reasoning_content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"city":"Tokyo"}'},
+                    }
+                ],
+                "usage": {"completion_tokens": 10},
+                "finish_reason": "tool_calls",
+            },
+            message_id="msg_1",
+            model="test-model",
+            input_tokens=5,
+        )
+        self.assertEqual(resp["stop_reason"], "tool_use")
+        types = [b["type"] for b in resp["content"]]
+        self.assertIn("text", types)
+        self.assertIn("tool_use", types)
+        tool_use = next(b for b in resp["content"] if b["type"] == "tool_use")
+        self.assertEqual(tool_use["input"], {"city": "Tokyo"})
 
 
 if __name__ == "__main__":
