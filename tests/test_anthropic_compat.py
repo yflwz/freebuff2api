@@ -274,5 +274,91 @@ class AnthropicStreamTests(unittest.TestCase):
         self.assertEqual(tool_use["input"], {"city": "Tokyo"})
 
 
+class AnthropicNonStreamingTests(unittest.TestCase):
+    def test_reasoning_becomes_thinking_block(self) -> None:
+        from freebuff2api.anthropic_compat import build_non_streaming_response
+        resp = build_non_streaming_response(
+            {
+                "content": "The answer is 42.",
+                "reasoning_content": "I will compute the answer.",
+                "tool_calls": [],
+                "usage": {"completion_tokens": 7},
+                "finish_reason": "stop",
+            },
+            message_id="msg_1",
+            model="test-model",
+            input_tokens=5,
+        )
+        self.assertEqual(resp["stop_reason"], "end_turn")
+        types = [b["type"] for b in resp["content"]]
+        self.assertEqual(types, ["thinking", "text"])
+        self.assertEqual(resp["content"][0]["thinking"], "I will compute the answer.")
+        self.assertEqual(resp["content"][1]["text"], "The answer is 42.")
+
+    def test_reasoning_and_tool_calls_together(self) -> None:
+        from freebuff2api.anthropic_compat import build_non_streaming_response
+        resp = build_non_streaming_response(
+            {
+                "content": "",
+                "reasoning_content": "I need a tool.",
+                "tool_calls": [
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q":"weather"}'},
+                    }
+                ],
+                "usage": {"completion_tokens": 12},
+                "finish_reason": "tool_calls",
+            },
+            message_id="msg_2",
+            model="test-model",
+            input_tokens=5,
+        )
+        self.assertEqual(resp["stop_reason"], "tool_use")
+        types = [b["type"] for b in resp["content"]]
+        self.assertEqual(types, ["thinking", "tool_use"])
+        self.assertEqual(resp["content"][0]["thinking"], "I need a tool.")
+        self.assertEqual(resp["content"][1]["name"], "search")
+        self.assertEqual(resp["content"][1]["input"], {"q": "weather"})
+
+    def test_empty_content_emits_text_block_when_no_other_blocks(self) -> None:
+        from freebuff2api.anthropic_compat import build_non_streaming_response
+        resp = build_non_streaming_response(
+            {
+                "content": "",
+                "reasoning_content": "",
+                "tool_calls": [],
+                "usage": {},
+                "finish_reason": "stop",
+            },
+            message_id="msg_3",
+            model="test-model",
+            input_tokens=5,
+        )
+        self.assertEqual(resp["stop_reason"], "end_turn")
+        self.assertEqual(len(resp["content"]), 1)
+        self.assertEqual(resp["content"][0]["type"], "text")
+        self.assertEqual(resp["content"][0]["text"], "")
+
+    def test_usage_and_model_preserved(self) -> None:
+        from freebuff2api.anthropic_compat import build_non_streaming_response
+        resp = build_non_streaming_response(
+            {
+                "content": "hi",
+                "reasoning_content": "",
+                "tool_calls": [],
+                "usage": {"completion_tokens": 123},
+                "finish_reason": "stop",
+            },
+            message_id="msg_4",
+            model="claude-test",
+            input_tokens=42,
+        )
+        self.assertEqual(resp["model"], "claude-test")
+        self.assertEqual(resp["usage"]["input_tokens"], 42)
+        self.assertEqual(resp["usage"]["output_tokens"], 123)
+
+
 if __name__ == "__main__":
     unittest.main()
