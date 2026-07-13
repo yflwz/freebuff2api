@@ -30,7 +30,8 @@ FREEBUFF_MODELS: tuple[FreebuffModel, ...] = (
     FreebuffModel("mimo/mimo-v2.5", "base2-free-mimo", display_name="MiMo 2.5"),
     FreebuffModel("mimo/mimo-v2.5-pro", "base2-free-mimo-pro", display_name="MiMo 2.5 Pro"),
     FreebuffModel("kwaipilot/kat-coder-pro-v2", "base2-free", display_name="KAT Coder Pro V2"),
-    FreebuffModel("tencent/hy3:free", "base2-free", display_name="GLM 5.2"),
+    FreebuffModel("z-ai/glm-5.2", "base2-free", display_name="GLM 5.2"),
+    FreebuffModel("tencent/hy3:free", "base2-free", display_name="Hunyuan 3"),
 )
 
 DEFAULT_MODEL = FREEBUFF_MODELS[0]
@@ -82,14 +83,16 @@ _PROVIDER_AGENT_MAP: dict[str, str] = {
     "mimo/": "base2-free-mimo",
     "tencent/": "base2-free",
     "kwaipilot/": "base2-free",
+    "z-ai/": "base2-free",
 }
 
 # Explicit display-name aliases for upstream model ids that don't map cleanly
 # to a human-readable name via the generic derivation logic.
 _DISPLAY_NAME_ALIASES: dict[str, str] = {
-    "tencent/hy3": "GLM 5.2",
-    "tencent/hy3:free": "GLM 5.2 Free",
-    "tencent/hy3.free": "GLM 5.2 Free",
+    "z-ai/glm-5.2": "GLM 5.2",
+    "tencent/hy3": "Hunyuan 3",
+    "tencent/hy3:free": "Hunyuan 3 Free",
+    "tencent/hy3.free": "Hunyuan 3 Free",
 }
 
 

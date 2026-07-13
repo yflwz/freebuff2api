@@ -40,7 +40,8 @@ class OpenAICompatTests(unittest.TestCase):
             "mimo/mimo-v2.5": "MiMo 2.5",
             "mimo/mimo-v2.5-pro": "MiMo 2.5 Pro",
             "kwaipilot/kat-coder-pro-v2": "KAT Coder Pro V2",
-            "tencent/hy3:free": "GLM 5.2",
+            "z-ai/glm-5.2": "GLM 5.2",
+            "tencent/hy3:free": "Hunyuan 3",
             "google/gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
             "google/gemini-3.1-flash-lite-preview": "Gemini 3.1 Flash Lite Preview",
             "google/gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
@@ -51,9 +52,10 @@ class OpenAICompatTests(unittest.TestCase):
     def test_derive_display_name_handles_dotted_tencent_variant(self) -> None:
         from freebuff2api.models import derive_display_name
 
-        self.assertEqual(derive_display_name("tencent/hy3"), "GLM 5.2")
-        self.assertEqual(derive_display_name("tencent/hy3:free"), "GLM 5.2 Free")
-        self.assertEqual(derive_display_name("tencent/hy3.free"), "GLM 5.2 Free")
+        self.assertEqual(derive_display_name("z-ai/glm-5.2"), "GLM 5.2")
+        self.assertEqual(derive_display_name("tencent/hy3"), "Hunyuan 3")
+        self.assertEqual(derive_display_name("tencent/hy3:free"), "Hunyuan 3 Free")
+        self.assertEqual(derive_display_name("tencent/hy3.free"), "Hunyuan 3 Free")
 
     def test_resolve_model_maps_agent_id(self) -> None:
         model = resolve_model("moonshotai/kimi-k2.7-code")
@@ -64,6 +66,12 @@ class OpenAICompatTests(unittest.TestCase):
         model = resolve_model("minimax/minimax-m3")
 
         self.assertEqual(model.agent_id, "base2-free-minimax-m3")
+
+    def test_resolve_glm_5_2_maps_agent_id(self) -> None:
+        model = resolve_model("z-ai/glm-5.2")
+
+        self.assertEqual(model.agent_id, "base2-free")
+        self.assertEqual(model.display_name, "GLM 5.2")
 
     def test_resolve_gemini_pro_routes_via_mimo(self) -> None:
         # Option B: gemini-pro is a thin alias for mimo/mimo-v2.5. Same
